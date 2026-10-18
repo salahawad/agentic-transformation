@@ -1,0 +1,26 @@
+services:
+  app:
+    ports: !reset []
+    environment:
+      COOKIE_SECURE: "true"
+      # Only Caddy can reach the app (no published port), and Caddy replaces client-sent
+      # X-Forwarded-For, so sign-in limits apply per visitor instead of to Caddy's IP.
+      FORWARDED_ALLOW_IPS: "*"
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ATLAS_DOMAIN: ${ATLAS_DOMAIN:?Set ATLAS_DOMAIN to your company hostname in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  caddy-data:
+  caddy-config:
