@@ -17,7 +17,7 @@ The default port binds to the local machine. To share the workspace with employe
 
 ## How to use it
 
-1. **Organization:** add entities (departments, business units, or companies), then teams within them. Rename an entity, or rename a team and move it to another entity. An entity or team can only be deleted once it is empty.
+1. **Organization:** add entities (departments, business units, or companies), then teams within them. Rename an entity, or rename a team and move it to another entity. An entity or team can only be deleted once it is empty. To share the work, use **Collaborators** on the same page: choose the entities a person can manage and copy their private sign-in link. A collaborator manages only those entities: their teams, employees, invitation links, assessments, and opportunities. They cannot see other entities, create or rename entities, edit the tools list, or manage collaborators. Links last 30 days and creating a new one invalidates the previous one. Changing a collaborator’s entities applies immediately, and removing them ends their access at once.
 2. **People & assessments:** add an employee’s name, work email, role, entity, and team. Each employee must have a team; the team determines their entity. Deleting an employee from their edit dialog also deletes their saved assessment.
 3. Copy the employee’s private assessment link and share it directly. The app does not send emails. Links last 30 days; creating a new link invalidates the previous one. You can revoke access without deleting answers.
 4. The employee selects digital tools, adds any custom tools, and describes one or more workflows. Each workflow has a frequency (times per workday, week, month, or year), trigger, outcome, pain points, and ordered steps. Each step records the action, tool, minutes per run, desired agent support, and any required human review. Switch between Text and Diagram to edit the same ordered steps; in Diagram, select a node to edit its details beside the compact flow. Unfinished steps are marked “Needs description,” and you can use arrow keys, Home, and End to navigate the flow.
@@ -25,6 +25,8 @@ The default port binds to the local machine. To share the workspace with employe
 6. **Overview** tracks completion and opportunities. **Digital tools** shows reported usage and edits the list employees choose from: add, rename, recategorize, or remove a tool, or add a custom tool employees reported. Renaming a tool updates saved answers; a removed tool stays in existing answers as a custom tool. **Agent opportunities** shows the supporting workflows, proposed tasks, tools, team, and estimated impact. Filter by entity/team or export opportunities as CSV.
 
 The dashboard updates when you navigate between workspace pages, use the refresh button in the top bar, or reload the page. Editing an employee’s team also moves their workflow evidence and opportunities to the new team.
+
+The admin workspace and employee assessments are available in **English and French**. Use the language selector on the sign-in page or in the header to switch at any time. The app starts in your browser’s language and remembers your choice on that browser. Switching preserves unsaved answers; employee names, tool names, and workflow text stay in the language in which they were entered. Dates, numbers, messages, and CSV headings follow the selected language.
 
 ## Optional sample workspace
 
@@ -68,7 +70,7 @@ FastAPI serves the browser interface and API from one container. SQLite uses WAL
 
 Administrators use a shared workspace password and 12-hour server-side sessions. Session cookies are HTTP-only and SameSite Strict. Employee links are bearer credentials; only their SHA-256 hashes are stored in the database. The browser removes the token from the address bar and retains it in that tab’s session storage. Closing the tab requires reopening the original invitation link. Cross-origin writes are rejected, public request bodies are bounded, and intake updates use optimistic revisions to prevent overwrites from stale tabs.
 
-Share invitations only with their intended recipients. The administrator can see all assessments. Employees can only access their own answers and cannot change identity or team assignments. Sign-in attempts are limited per client IP. The bundled Caddy configuration passes each visitor’s IP to the app; behind your own reverse proxy the limit is shared, because the app does not trust that proxy’s forwarded client-IP headers. This first version does not include SSO, mail delivery, multiple administrator roles, or automatic agent execution.
+Share invitations only with their intended recipients. The administrator can see all assessments. Employees can only access their own answers and cannot change identity or team assignments. Sign-in attempts are limited per client IP. The bundled Caddy configuration passes each visitor’s IP to the app; behind your own reverse proxy the limit is shared unless you set `FORWARDED_ALLOW_IPS` in `.env` to the app’s Docker network gateway (`docker network inspect agentic-transformation_default`). The app then reads the visitor’s IP from the last `X-Forwarded-For` entry your proxy adds, so client-supplied values are ignored. Collaborators sign in with their own link instead of the workspace password, and the server limits every request to their entities. This first version does not include SSO, mail delivery, finer-grained roles, or automatic agent execution.
 
 Changing `ADMIN_PASSWORD` does not end existing sessions. To sign out every administrator after changing it:
 
@@ -108,6 +110,8 @@ python3 -m venv .venv
 .venv/bin/uvicorn app.main:app --reload --port 8180
 .venv/bin/python -m unittest discover -s tests -v
 node --check app/static/app.js
+node --check app/static/i18n.js
+node tests/test_i18n.js
 docker compose config --quiet
 ```
 
@@ -116,6 +120,7 @@ The API tests use temporary databases. A separate browser smoke test exercises o
 ```bash
 # Requires Playwright and its Chromium browser in the invoking Python environment.
 python3 tests/browser_smoke.py
+python3 tests/browser_bilingual.py
 ```
 
 Browser logs and screenshots go in the ignored `artifacts/` directory. The browser test starts and stops an isolated local server on port 18181 and does not modify the Docker workspace.

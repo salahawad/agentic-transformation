@@ -216,6 +216,64 @@ class WorkspaceTests(unittest.TestCase):
         saved = self.client.get('/api/intake', headers=auth).json()['assessment']
         self.assertEqual((saved['tools'], saved['workflows'][0]['steps'][0]['tool']), (['ChatGPT Enterprise', 'Microsoft Excel'], 'ChatGPT Enterprise'))
 
+    def test_collaborator_access_is_limited_to_granted_entities(self):
+        mine, mine_auth = self.person()
+        self.client.put('/api/intake', headers=mine_auth, json=self.assessment())
+        ops = self.client.get('/api/admin/workspace').json()['entities'][0]['id']
+        planning = self.client.get('/api/admin/workspace').json()['teams'][0]['id']
+        finance = self.client.post('/api/admin/entities', json={'name': 'Finance'}).json()['id']
+        accounts = self.client.post('/api/admin/teams', json={'name': 'Accounts', 'entity_id': finance}).json()['id']
+        other = self.client.post('/api/admin/employees', json={'name': 'Sam Lee', 'email': 'sam@example.com', 'role': 'Analyst', 'team_id': accounts}).json()
+        self.client.put('/api/intake', headers={'Authorization': 'Bearer ' + other['token']}, json=self.assessment())
+        invite = self.client.post('/api/admin/collaborators', json={'name': 'Kim Park', 'email': 'kim@example.com', 'entity_ids': [ops, ops]})
+        self.assertEqual(invite.status_code, 201, invite.text)
+        self.assertEqual(self.client.post('/api/admin/collaborators', json={'name': 'X', 'email': 'x@example.com', 'entity_ids': [999]}).status_code, 409)
+        guest = TestClient(main.app)
+        self.assertEqual(guest.post('/api/join', json={'token': 'wrong'}).status_code, 401)
+        self.assertEqual(guest.post('/api/join', json={'token': invite.json()['token']}).status_code, 200)
+        workspace = guest.get('/api/admin/workspace').json()
+        self.assertEqual(workspace['viewer'], {'name': 'Kim Park', 'entity_ids': [ops]})
+        self.assertEqual(([e['id'] for e in workspace['entities']], [t['id'] for t in workspace['teams']]), ([ops], [planning]))
+        self.assertEqual([p['id'] for p in workspace['employees']], [mine['id']])
+        self.assertEqual({o['entity_id'] for o in workspace['opportunities']}, {ops})
+        self.assertEqual(workspace['collaborators'], [])
+        for method, path, body in [('post', '/api/admin/entities', {'name': 'New'}), ('put', f'/api/admin/entities/{ops}', {'name': 'Mine'}),
+                                   ('delete', f'/api/admin/entities/{ops}', None), ('post', '/api/admin/tools', {'name': 'T', 'category': 'C'}),
+                                   ('post', '/api/admin/collaborators', {'name': 'Y', 'email': 'y@example.com', 'entity_ids': [ops]})]:
+            self.assertEqual(guest.request(method, path, json=body).status_code, 403, path)
+        for method, path, body in [('post', '/api/admin/teams', {'name': 'Audit', 'entity_id': finance}),
+                                   ('put', f'/api/admin/teams/{accounts}', {'name': 'A', 'entity_id': finance}),
+                                   ('put', f'/api/admin/teams/{planning}', {'name': 'Planning', 'entity_id': finance}),
+                                   ('delete', f'/api/admin/teams/{accounts}', None),
+                                   ('post', '/api/admin/employees', {'name': 'Z', 'email': 'z@example.com', 'role': 'R', 'team_id': accounts}),
+                                   ('put', f"/api/admin/employees/{mine['id']}", {'name': 'Alex Morgan', 'email': 'alex@example.com', 'role': 'R', 'team_id': accounts}),
+                                   ('put', f"/api/admin/employees/{other['id']}", {'name': 'Sam Lee', 'email': 'sam@example.com', 'role': 'R', 'team_id': planning}),
+                                   ('delete', f"/api/admin/employees/{other['id']}", None), ('post', f"/api/admin/employees/{other['id']}/invite", None),
+                                   ('delete', f"/api/admin/employees/{other['id']}/invite", None), ('get', f"/api/admin/employees/{other['id']}/assessment", None)]:
+            self.assertEqual(guest.request(method, path, json=body).status_code, 404, (method, path))
+        self.assertEqual(guest.get(f"/api/admin/employees/{mine['id']}/assessment").status_code, 200)
+        self.assertEqual(guest.post('/api/admin/teams', json={'name': 'Field', 'entity_id': ops}).status_code, 201)
+        self.assertEqual(guest.post(f"/api/admin/employees/{mine['id']}/invite").status_code, 200)
+        collaborator = self.client.get('/api/admin/workspace').json()['collaborators'][0]
+        self.assertEqual(collaborator['entity_ids'], [ops])
+        self.client.put(f"/api/admin/collaborators/{collaborator['id']}", json={'name': 'Kim Park', 'email': 'kim@example.com', 'entity_ids': [finance]})
+        self.assertEqual([e['id'] for e in guest.get('/api/admin/workspace').json()['entities']], [finance])
+        self.client.post(f"/api/admin/collaborators/{collaborator['id']}/invite")
+        self.assertEqual(guest.post('/api/join', json={'token': invite.json()['token']}).status_code, 401)
+        self.assertEqual(self.client.delete(f"/api/admin/collaborators/{collaborator['id']}").status_code, 200)
+        self.assertEqual(guest.get('/api/admin/workspace').status_code, 401)
+        guest.close()
+
+    def test_sessions_from_before_collaborators_keep_working(self):
+        main.DB_PATH = Path(self.directory.name) / 'old.sqlite3'
+        with main.database() as db:
+            db.execute('CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)')
+            db.execute('INSERT INTO sessions VALUES (?,?)', (main.digest('old-token'), 2**40))
+        main.initialize()
+        old = TestClient(main.app, cookies={'atlas_session': 'old-token'})
+        self.assertEqual(old.get('/api/admin/workspace').json()['viewer'], None)
+        old.close()
+
     def test_trust_boundary_validation(self):
         _, auth = self.person()
         payload = self.assessment()

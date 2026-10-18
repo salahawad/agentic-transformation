@@ -17,7 +17,7 @@ PASSWORD = 'browser-test-password-12345'
 BASE = 'http://127.0.0.1:18181'
 
 
-def run():
+def run(checks=None):
     with tempfile.TemporaryDirectory() as directory:
         env = {**os.environ, 'ADMIN_PASSWORD': PASSWORD, 'DATABASE_PATH': str(Path(directory)/'test.sqlite3')}
         with (ARTIFACTS/'browser-server.log').open('w') as log:
@@ -33,7 +33,7 @@ def run():
                         time.sleep(.1)
                 else:
                     raise RuntimeError('Test server did not become ready')
-                browser_checks()
+                (checks or browser_checks)()
             finally:
                 server.terminate()
                 server.wait(timeout=10)
@@ -332,6 +332,48 @@ def browser_checks():
         page.get_by_role('link', name='Overview', exact=True).click()
         expect(page.get_by_text('Operations Hub / Field Sales', exact=False).first).to_be_visible()
 
+        page.get_by_role('link', name='Organization', exact=True).click()
+        page.get_by_role('button', name='Add entity', exact=True).click()
+        page.get_by_label('Entity name', exact=True).fill('Finance')
+        page.get_by_role('button', name='Create entity').click()
+        page.locator('.panel').filter(has=page.get_by_role('heading', name='Finance', exact=True)).get_by_role('button', name='Add team', exact=True).click()
+        page.get_by_label('Team name', exact=True).fill('Accounts')
+        page.get_by_role('button', name='Create team').click()
+        page.get_by_role('button', name='Invite collaborator').click()
+        page.get_by_label('Full name', exact=True).fill('Kim Park')
+        page.get_by_label('Work email', exact=True).fill('kim@example.com')
+        page.get_by_role('button', name='Create sign-in link').click()
+        expect(page.locator('#modal-error')).to_contain_text('at least one entity')
+        page.get_by_label('Finance', exact=True).check()
+        page.get_by_role('button', name='Create sign-in link').click()
+        join_link = page.get_by_label('Collaborator sign-in link').input_value()
+        page.get_by_role('button', name='Done', exact=True).click()
+        expect(page.get_by_text('kim@example.com', exact=True)).to_be_visible()
+        page.screenshot(path=str(ARTIFACTS/'collaborators.png'), full_page=True, animations='disabled')
+        guest = browser.new_context(viewport={'width':1280,'height':1000})
+        delegate = guest.new_page()
+        delegate.on('pageerror', lambda e: errors.append(str(e)))
+        delegate.goto(join_link)
+        expect(delegate.get_by_text('Kim Park', exact=True)).to_be_visible()
+        assert '#' not in delegate.url, 'Collaborator token must be removed from visible URL'
+        delegate.get_by_role('link', name='Organization', exact=True).click()
+        expect(delegate.get_by_role('heading', name='Finance', exact=True)).to_be_visible()
+        expect(delegate.get_by_role('heading', name='Operations Hub', exact=True)).to_have_count(0)
+        expect(delegate.get_by_role('button', name='Add entity', exact=True)).to_have_count(0)
+        expect(delegate.get_by_role('button', name='Invite collaborator')).to_have_count(0)
+        delegate.get_by_role('button', name='Add team', exact=True).click()
+        delegate.get_by_label('Team name', exact=True).fill('Payables')
+        delegate.get_by_role('button', name='Create team').click()
+        expect(delegate.get_by_text('Payables', exact=True)).to_be_visible()
+        delegate.get_by_role('link', name='People & assessments').click()
+        expect(delegate.get_by_text('Alex Morgan', exact=True)).to_have_count(0)
+        page.get_by_role('link', name='Organization', exact=True).click()
+        page.get_by_role('button', name='Delete Kim Park', exact=True).click()
+        expect(page.get_by_text('kim@example.com', exact=True)).to_have_count(0)
+        delegate.get_by_role('link', name='Overview', exact=True).click()
+        expect(delegate.get_by_label('Workspace password')).to_be_visible()
+        guest.close()
+
         page.set_viewport_size({'width':390,'height':844})
         page.get_by_role('button', name='Toggle navigation').click()
         page.get_by_role('link', name='Overview', exact=True).click()
@@ -359,7 +401,7 @@ def browser_checks():
         form.screenshot(path=str(ARTIFACTS/'intake-diagram-mobile.png'),full_page=True, animations='disabled')
         assert form.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Diagram overflowed mobile width'
         assert not errors, errors
-        print('PASS: browser admin setup, invitations, custom tool Enter, workflow ordering, draft reload, save locking, Text/Diagram editing, hidden-step validation, compact diagrams, frequency units, keyboard navigation, diagram add/reorder/remove, submission, suggestions, CSV export, editing, organization rename/move/delete, tool list editing, search, and responsive layouts; no JavaScript errors.')
+        print('PASS: browser admin setup, invitations, custom tool Enter, workflow ordering, draft reload, save locking, Text/Diagram editing, hidden-step validation, compact diagrams, frequency units, keyboard navigation, diagram add/reorder/remove, submission, suggestions, CSV export, editing, organization rename/move/delete, collaborator access, tool list editing, search, and responsive layouts; no JavaScript errors.')
         employee.close(); admin.close(); browser.close()
 
 

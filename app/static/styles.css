@@ -279,6 +279,22 @@ display: flex;
   align-items: center;
   gap: 15px;
 }
+.language-picker select {
+  width: auto;
+  min-width: 100px;
+  padding: 7px 25px 7px 10px;
+  font-size: 12px;
+}
+.login-language {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 24px;
+}
+.intake-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
 .live-label {
   display: flex;
   align-items: center;
@@ -837,6 +853,9 @@ tr:last-child td {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
+}
+.organization-grid .panel-header {
+  flex-wrap: wrap;
 }
 .team-row {
   display: flex;
@@ -1400,13 +1419,22 @@ content: "";
   outline: 3px solid #495773;
   outline-offset: 3px;
 }
-.frequency-field {
+.team-row:first-child {
+  border-top: 0;
+}
+.collaborator-entities {
+  display: block;
+  margin-top: 4px;
+}
+.frequency-field,
+.entity-choices {
   border: 0;
   padding: 0;
   min-width: 0;
   margin: 0 0 17px;
 }
-.frequency-field legend {
+.frequency-field legend,
+.entity-choices legend {
   padding: 0;
   margin-bottom: 7px;
   font-size: 12px;
@@ -2336,7 +2364,7 @@ content: "";
   }
   .opportunity-grid,
   .organization-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .page-heading {
     align-items: flex-start;
@@ -2370,6 +2398,22 @@ content: "";
   }
 }
 @media (max-width: 650px) {
+  .topbar-right .live-label,
+  .topbar-right .topbar-divider,
+  .topbar-right > .avatar {
+    display: none;
+  }
+  .breadcrumb {
+    min-width: 0;
+  }
+  .breadcrumb strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .topbar-right {
+    flex-shrink: 0;
+  }
   .skip-link {
     left: 16px;
   }

@@ -54,8 +54,11 @@ const initials = (name) =>
     .map((s) => s[0])
     .join("")
     .toUpperCase();
-const plural = (n, noun) => `${n} ${noun}${n === 1 ? "" : "s"}`;
-const brand = `<div class="brand"><span class="brand-mark">${icon("nodes")}</span>Agent Atlas<span class="screen-reader">Transformation workspace</span></div>`;
+const plural = (n, noun) => {
+  const many = { person: "people", opportunity: "opportunities" }[noun] || `${noun}s`;
+  return `${formatNumber(n)} ${tr(n === 1 ? noun : many)}`;
+};
+const brand = () => `<div class="brand"><span class="brand-mark">${icon("nodes")}</span>${tr("Agent Atlas")}<span class="screen-reader">${tr("Transformation workspace")}</span></div>`;
 const state = {
   data: null,
   page: "overview",
@@ -68,6 +71,48 @@ const state = {
   savedAt: null,
   savedRest: "",
 };
+function opportunityName(opportunity) {
+  return tr("{0} assistant", opportunity.workflow_name);
+}
+function categoryLabel(category) {
+  const defaults = ["Communication", "Documents & knowledge", "Projects & operations",
+    "Business systems", "Design & development", "AI assistants"];
+  return defaults.includes(category) ? tr(category) : category;
+}
+function changeLanguage(value) {
+  if (state.saving || modal.open) {
+    $("#language-select").value = language;
+    return;
+  }
+  const fields = [...app.querySelectorAll("input[id], textarea[id], select[id]")]
+    .filter((node) => node.id !== "language-select")
+    .map((node) => ({ id: node.id, value: node.value, checked: node.checked }));
+  const focus = document.activeElement.id;
+  const scroll = window.scrollY;
+  setLanguage(value);
+  if (state.screen === "workspace") renderShell();
+  else if (state.screen === "intake") renderIntake();
+  else if (state.screen === "success") renderSuccess();
+  else if (state.screen === "error") renderStartError(state.startError, state.intakeError);
+  else renderLogin();
+  for (const field of fields) {
+    const node = document.getElementById(field.id);
+    if (node) {
+      node.value = field.value;
+      if (node.type === "checkbox") node.checked = field.checked;
+    }
+  }
+  if ($("#tool-search")) renderToolOptions($("#tool-search").value);
+  $("#toast").hidden = true;
+  document.getElementById(focus)?.focus({ preventScroll: true });
+  window.scrollTo(0, scroll);
+}
+function renderStartError(error, intake = false) {
+  state.screen = "error";
+  state.startError = error;
+  state.intakeError = intake;
+  app.innerHTML = `${intakeHeader()}<main class="intake-error"><span class="empty-icon">${icon("shield")}</span><h1>${tr(intake ? "Let’s get you the right link." : "We couldn’t open the workspace.")}</h1><p>${esc(localizeError(error.detail || error.message))}</p>${intake ? "" : `<button class="button" data-action="reload">${tr("Try reloading the page")}</button>`}</main>`;
+}
 const workflowViews = new WeakMap();
 function workflowView(workflow) {
   if (!workflowViews.has(workflow))
@@ -93,27 +138,27 @@ function unsavedParts() {
   const a = state.intake.assessment;
   const rest = JSON.parse(state.savedRest);
   return [
-    JSON.stringify(a.tools) !== JSON.stringify(rest.tools) && "tools",
+    JSON.stringify(a.tools) !== JSON.stringify(rest.tools) && tr("tools"),
     ...a.workflows.map(
-      (w, i) => workflowSaveState(w) !== "saved" && `workflow ${i + 1}`,
+      (w, i) => workflowSaveState(w) !== "saved" && tr("workflow {0}", i + 1),
     ),
-    a.notes !== rest.notes && "notes",
+    a.notes !== rest.notes && tr("notes"),
   ].filter(Boolean);
 }
 function workflowSaveBadge(w) {
   const status = workflowSaveState(w);
   return status === "saved"
-    ? `<span class="tag green">${icon("check")}Saved</span>`
-    : `<span class="tag amber">${status === "new" ? "Not saved yet" : "Unsaved changes"}</span>`;
+    ? `<span class="tag green">${tr("{0}Saved", icon("check"))}</span>`
+    : `<span class="tag amber">${status === "new" ? tr("Not saved yet") : tr("Unsaved changes")}</span>`;
 }
 function saveNote() {
   const unsaved = unsavedParts();
-  if (unsaved.length) return `Not saved yet: ${unsaved.join(", ")}`;
+  if (unsaved.length) return tr("Not saved yet: {0}", unsaved.join(", "));
   if (state.savedAt)
-    return `All changes saved ${new Date(state.savedAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    return tr("All changes saved {0}", new Date(state.savedAt * 1000).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" }));
   return state.intake.assessment.revision
-    ? "All changes saved"
-    : "Your progress is saved when you continue.";
+    ? tr("All changes saved")
+    : tr("Your progress is saved when you continue.");
 }
 function showSaveStatus() {
   document.querySelectorAll("[data-workflow-saved]").forEach((node) => {
@@ -138,11 +183,18 @@ function toast(message, error = false) {
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...options.headers };
   if (path === "/api/intake") headers.Authorization = `Bearer ${state.token}`;
-  const response = await fetch(path, {
-    ...options,
-    headers,
-    credentials: "same-origin",
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers,
+      credentials: "same-origin",
+    });
+  } catch {
+    const error = new Error(tr("Unable to connect. Please try again."));
+    error.detail = "Unable to connect. Please try again.";
+    throw error;
+  }
   const raw = await response.text();
   let data;
   try {
@@ -153,10 +205,11 @@ async function api(path, options = {}) {
   if (!response.ok) {
     const detail = Array.isArray(data.detail)
       ? data.detail
-          .map((e) => `${e.loc.slice(1).join(" → ")}: ${e.msg}`)
+          .map(validationMessage)
           .join("; ")
       : data.detail;
-    const error = new Error(detail || `Request failed (${response.status})`);
+    const error = new Error(localizeError(detail) || tr("Request failed ({0})", response.status));
+    error.detail = detail;
     error.status = response.status;
     throw error;
   }
@@ -178,7 +231,7 @@ function filterData() {
   return { employees, opportunities };
 }
 function statusTag(status) {
-  return `<span class="tag ${status === "submitted" ? "green" : status === "draft" ? "amber" : "blue"}">${status === "submitted" ? icon("check") : ""}${status === "submitted" ? "Completed" : status === "draft" ? "In progress" : "Invited"}</span>`;
+  return `<span class="tag ${status === "submitted" ? "green" : status === "draft" ? "amber" : "blue"}">${status === "submitted" ? icon("check") : ""}${status === "submitted" ? tr("Completed") : status === "draft" ? tr("In progress") : tr("Invited")}</span>`;
 }
 function empty(title, description, action = "", symbol = "spark") {
   return `<div class="empty"><span class="empty-icon">${icon(symbol)}</span><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`;
@@ -187,12 +240,12 @@ function filters() {
   const teams = state.data.teams.filter(
     (t) => !state.entity || t.entity_id === +state.entity,
   );
-  return `<div class="filter-row"><label class="screen-reader" for="entity-filter">Filter by entity</label><select id="entity-filter"><option value="">All entities</option>${state.data.entities.map((e) => `<option value="${e.id}" ${String(e.id) === state.entity ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select><label class="screen-reader" for="team-filter">Filter by team</label><select id="team-filter"><option value="">All teams</option>${teams.map((t) => `<option value="${t.id}" ${String(t.id) === state.team ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>`;
+  return `<div class="filter-row"><label class="screen-reader" for="entity-filter">${tr("Filter by entity")}</label><select id="entity-filter"><option value="">${tr("All entities")}</option>${state.data.entities.map((e) => `<option value="${e.id}" ${String(e.id) === state.entity ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select><label class="screen-reader" for="team-filter">${tr("Filter by team")}</label><select id="team-filter"><option value="">${tr("All teams")}</option>${teams.map((t) => `<option value="${t.id}" ${String(t.id) === state.team ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>`;
 }
 function pageHeading(eyebrow, title, subtitle, button = "") {
   return `<div class="page-heading"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div>${button}</div>`;
 }
-const inviteButton = `<button class="button primary" data-action="add-person">${icon("plus")}Invite employee</button>`;
+const inviteButton = () => `<button class="button primary" data-action="add-person">${tr("{0}Invite employee", icon("plus"))}</button>`;
 const navItems = [
   ["overview", "grid", "Overview"],
   ["people", "people", "People & assessments"],
@@ -200,25 +253,30 @@ const navItems = [
   ["tools", "tools", "Digital tools"],
   ["roadmap", "spark", "Agent opportunities"],
 ];
+// Collaborators see only their entities; the server enforces this, the interface just hides admin-only controls.
+const isAdmin = () => !state.data?.viewer;
 function renderShell() {
+  state.screen = "workspace";
+  const viewer = state.data.viewer;
+  const avatar = viewer ? esc(initials(viewer.name)) : tr("WA");
   if (!navItems.some((n) => n[0] === state.page)) state.page = "overview";
-  const title = navItems.find((n) => n[0] === state.page)[2];
+  const title = tr(navItems.find((n) => n[0] === state.page)[2]);
   const completed = state.data.employees.filter((p) => p.status === "submitted").length;
   const percent = state.data.employees.length
     ? Math.round((completed / state.data.employees.length) * 100) : 0;
   app.innerHTML = `
-    <a class="skip-link" href="#content">Skip to content</a>
+    <a class="skip-link" href="#content">${tr("Skip to content")}</a>
     <aside class="sidebar" id="sidebar">
-      ${brand}
-      <div class="workspace-context"><span class="workspace-icon">${icon("building")}</span><div><strong>Company workspace</strong><span>Agentic transformation</span></div></div>
-      <div class="workspace-label">Workspace</div>
-      <nav class="nav" aria-label="Main navigation">${navItems.map(([id, symbol, label]) => `${id === "tools" ? '<div class="workspace-label nav-label">Intelligence</div>' : ""}<a href="#${id}" class="${state.page === id ? "active" : ""}" ${state.page === id ? 'aria-current="page"' : ""}>${icon(symbol)}<span>${label}</span>${id === "people" || id === "roadmap" ? `<span class="count" aria-hidden="true">${id === "people" ? state.data.employees.length : state.data.opportunities.length}</span>` : ""}</a>`).join("")}</nav>
+      ${brand()}
+      <div class="workspace-context"><span class="workspace-icon">${icon("building")}</span><div><strong>${tr("Company workspace")}</strong><span>${tr("Agentic transformation")}</span></div></div>
+      <div class="workspace-label">${tr("Workspace")}</div>
+      <nav class="nav" aria-label="${tr("Main navigation")}">${navItems.map(([id, symbol, label]) => `${id === "tools" ? `<div class="workspace-label nav-label">${tr("Intelligence")}</div>` : ""}<a href="#${id}" class="${state.page === id ? "active" : ""}" ${state.page === id ? 'aria-current="page"' : ""}>${icon(symbol)}<span>${tr(label)}</span>${id === "people" || id === "roadmap" ? `<span class="count" aria-hidden="true">${id === "people" ? state.data.employees.length : state.data.opportunities.length}</span>` : ""}</a>`).join("")}</nav>
       <div class="sidebar-bottom">
-        <a class="sidebar-note" href="#people"><div class="sidebar-note-heading">Discovery progress<span>${percent}%</span></div><progress value="${completed}" max="${Math.max(state.data.employees.length, 1)}" aria-label="Workspace assessment completion"></progress><span>${completed} of ${state.data.employees.length} assessments completed</span><strong>Keep the discovery moving ${icon("arrow")}</strong></a>
-        <div class="user-badge"><span class="avatar">WA</span><div><strong class="small">Workspace admin</strong><div class="small muted">Transformation lead</div></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">${icon("logout")}</button></div>
+        <a class="sidebar-note" href="#people"><div class="sidebar-note-heading">${tr("Discovery progress")}<span>${percent}%</span></div><progress value="${completed}" max="${Math.max(state.data.employees.length, 1)}" aria-label="${tr("Workspace assessment completion")}"></progress><span>${tr("{0} of {1} assessments completed", completed, state.data.employees.length)}</span><strong>${tr("Keep the discovery moving {0}", icon("arrow"))}</strong></a>
+        <div class="user-badge"><span class="avatar">${avatar}</span><div><strong class="small">${viewer ? esc(viewer.name) : tr("Workspace admin")}</strong><div class="small muted">${viewer ? tr("Collaborator") : tr("Transformation lead")}</div></div><button class="icon-button" data-action="logout" aria-label="${tr("Sign out")}" title="${tr("Sign out")}">${icon("logout")}</button></div>
       </div>
     </aside>
-    <main class="main"><header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" data-action="menu" aria-label="Toggle navigation" aria-controls="sidebar" aria-expanded="false">${icon("menu")}</button><span class="workspace-crumb">Workspace</span><span class="workspace-crumb">/</span><strong>${title}</strong></div><div class="topbar-right"><span class="live-label">${icon("shield")}Private workspace</span><span class="topbar-divider"></span><button class="icon-button" data-action="refresh" aria-label="Refresh workspace" title="Refresh workspace">${icon("refresh")}</button><span class="avatar">WA</span></div></header><div class="content" id="content" tabindex="-1"></div></main>`;
+    <main class="main"><header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" data-action="menu" aria-label="${tr("Toggle navigation")}" aria-controls="sidebar" aria-expanded="false">${icon("menu")}</button><span class="workspace-crumb">${tr("Workspace")}</span><span class="workspace-crumb">/</span><strong>${title}</strong></div><div class="topbar-right">${languagePicker()}<span class="live-label">${tr("{0}Private workspace", icon("shield"))}</span><span class="topbar-divider"></span><button class="icon-button" data-action="refresh" aria-label="${tr("Refresh workspace")}" title="${tr("Refresh workspace")}">${icon("refresh")}</button><span class="avatar">${avatar}</span></div></header><div class="content" id="content" tabindex="-1"></div></main>`;
   renderContent();
 }
 function renderContent() {
@@ -241,42 +299,42 @@ function renderOverview() {
   const percent = employees.length ? Math.round((completed / employees.length) * 100) : 0;
   const hasTeams = state.data.teams.length > 0;
   const nextPage = !hasTeams ? "organization" : opportunities.length ? "roadmap" : "people";
-  const nextLabel = !hasTeams ? "Set up your organization" : opportunities.length ? "Explore opportunities" : "Manage assessments";
+  const nextLabel = !hasTeams ? tr("Set up your organization") : opportunities.length ? tr("Explore opportunities") : tr("Manage assessments");
   $("#content").innerHTML = `
-    ${pageHeading("Discover. Design. Transform.", "Transformation overview", "A clearer picture of your work. A practical path to your next agent.", inviteButton)}
+    ${pageHeading(tr("Discover. Design. Transform."), tr("Transformation overview"), tr("A clearer picture of your work. A practical path to your next agent."), inviteButton())}
     <section class="workspace-hero" aria-labelledby="hero-title">
-      <div class="hero-copy"><span class="hero-kicker"><span class="dot"></span>YOUR AGENTIC TRANSFORMATION STARTS HERE</span><h2 id="hero-title">Great agents start<br>with everyday work.</h2><p>Find the repetitive work. Connect the right tools.<br>Put your people at the center of every pilot.</p><a class="button primary" href="#${nextPage}">${nextLabel}${icon("arrow")}</a></div>
-      <div class="hero-canvas" aria-label="Discovery process: map workflows, identify opportunities, then validate with people"><span class="canvas-caption">FROM WORKFLOW TO OPPORTUNITY</span><div class="hero-flow"><div class="hero-node"><span class="hero-node-icon">${icon("route")}</span><strong>Map the work</strong><span>${plural(workflows, "workflow")} shared</span></div><span class="hero-connector">${icon("arrow")}</span><div class="hero-node featured"><span class="hero-node-icon">${icon("nodes")}</span><strong>Find the agent</strong><span>${plural(opportunities.length, "opportunity").replace("opportunitys", "opportunities")}</span></div><span class="hero-connector">${icon("arrow")}</span><div class="hero-node"><span class="hero-node-icon">${icon("shield")}</span><strong>Keep people in</strong><span>Validate in a pilot</span></div></div><span class="canvas-note">${icon("link")}Grounded in your team’s tools and workflows</span></div>
+      <div class="hero-copy"><span class="hero-kicker"><span class="dot"></span>${tr("YOUR AGENTIC TRANSFORMATION STARTS HERE")}</span><h2 id="hero-title">${tr("Great agents start")}<br>${tr("with everyday work.")}</h2><p>${tr("Find the repetitive work. Connect the right tools.")}<br>${tr("Put your people at the center of every pilot.")}</p><a class="button primary" href="#${nextPage}">${nextLabel}${icon("arrow")}</a></div>
+      <div class="hero-canvas" aria-label="${tr("Discovery process: map workflows, identify opportunities, then validate with people")}"><span class="canvas-caption">${tr("FROM WORKFLOW TO OPPORTUNITY")}</span><div class="hero-flow"><div class="hero-node"><span class="hero-node-icon">${icon("route")}</span><strong>${tr("Map the work")}</strong><span>${tr("{0} shared", plural(workflows, "workflow"))}</span></div><span class="hero-connector">${icon("arrow")}</span><div class="hero-node featured"><span class="hero-node-icon">${icon("nodes")}</span><strong>${tr("Find the agent")}</strong><span>${plural(opportunities.length, "opportunity")}</span></div><span class="hero-connector">${icon("arrow")}</span><div class="hero-node"><span class="hero-node-icon">${icon("shield")}</span><strong>${tr("Keep people in")}</strong><span>${tr("Validate in a pilot")}</span></div></div><span class="canvas-note">${tr("{0}Grounded in your team’s tools and workflows", icon("link"))}</span></div>
     </section>
-    <div class="overview-toolbar"><h2>Workspace at a glance</h2>${filters()}</div>
+    <div class="overview-toolbar"><h2>${tr("Workspace at a glance")}</h2>${filters()}</div>
     <div class="stats">${[
-      ["people", "People invited", employees.length, "", `${completed} completed · ${percent}% coverage`],
-      ["route", "Workflows mapped", workflows, "", "From completed assessments"],
-      ["nodes", "Agent opportunities", opportunities.length, "", "Grounded in submitted workflows"],
-      ["clock", "Potential time back", hours.toFixed(1), "h / week", "Planning estimate · validate in a pilot"],
+      ["people", tr("People invited"), employees.length, "", tr("{0} completed · {1}% coverage", completed, percent)],
+      ["route", tr("Workflows mapped"), workflows, "", tr("From completed assessments")],
+      ["nodes", tr("Agent opportunities"), opportunities.length, "", tr("Grounded in submitted workflows")],
+      ["clock", tr("Potential time back"), formatNumber(hours, 1), tr("h / week"), tr("Planning estimate · validate in a pilot")],
     ].map(([i, label, value, unit, caption]) => `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${icon(i)}</span></div><div class="stat-value">${value}<span>${unit}</span></div><div class="stat-caption">${esc(caption)}</div></div>`).join("")}</div>
-    <div class="section-heading"><div><h2>Agent opportunities <span class="tag outline">${opportunities.length}</span></h2><p>Your next pilots, ranked by potential weekly impact.</p></div><a href="#roadmap" class="text-link">View all opportunities ${icon("arrow")}</a></div>
-    ${opportunities.length ? `<div class="opportunity-grid">${opportunities.slice(0, 4).map(agentCard).join("")}</div><p class="method-note">${icon("info")}Estimates use 50% of assisted or human-reviewed steps and 70% of automated steps. These are planning assumptions, not measured savings.</p>` : `<div class="panel">${empty("Your next helpful agent starts here", "Opportunities appear when employees submit workflows. Each proposal includes its source evidence, tools, and potential impact.", '<a class="button" href="#people">View people & assessments' + icon("arrow") + "</a>", "nodes")}</div>`}
-    <div class="section-heading"><div><h2>Discovery coverage</h2><p>See where your organization is ready for the next step.</p></div><a href="#organization" class="text-link">Manage organization ${icon("arrow")}</a></div>
-    <div class="coverage-grid"><section class="panel"><div class="panel-header"><div><h3>Assessment coverage by entity</h3><p>Completion for the selected people and teams</p></div><span class="tag blue">${percent}% complete</span></div>${state.data.entities.length ? state.data.entities.filter((e) => !state.entity || e.id === +state.entity).map((e) => {
+    <div class="section-heading"><div><h2>${tr("Agent opportunities")} <span class="tag outline">${opportunities.length}</span></h2><p>${tr("Your next pilots, ranked by potential weekly impact.")}</p></div><a href="#roadmap" class="text-link">${tr("View all opportunities {0}", icon("arrow"))}</a></div>
+    ${opportunities.length ? `<div class="opportunity-grid">${opportunities.slice(0, 4).map(agentCard).join("")}</div><p class="method-note">${tr("{0}Estimates use 50% of assisted or human-reviewed steps and 70% of automated steps. These are planning assumptions, not measured savings.", icon("info"))}</p>` : `<div class="panel">${empty(tr("Your next helpful agent starts here"), tr("Opportunities appear when employees submit workflows. Each proposal includes its source evidence, tools, and potential impact."), `<a class="button" href="#people">${tr("View people & assessments")}` + icon("arrow") + `</a>`, "nodes")}</div>`}
+    <div class="section-heading"><div><h2>${tr("Discovery coverage")}</h2><p>${tr("See where your organization is ready for the next step.")}</p></div><a href="#organization" class="text-link">${tr("Manage organization {0}", icon("arrow"))}</a></div>
+    <div class="coverage-grid"><section class="panel"><div class="panel-header"><div><h3>${tr("Assessment coverage by entity")}</h3><p>${tr("Completion for the selected people and teams")}</p></div><span class="tag blue">${tr("{0}% complete", percent)}</span></div>${state.data.entities.length ? state.data.entities.filter((e) => !state.entity || e.id === +state.entity).map((e) => {
       const people = employees.filter((p) => p.entity_id === e.id);
       const done = people.filter((p) => p.status === "submitted").length;
-      return `<div class="entity-row"><span class="entity-icon">${icon("building")}</span><div><h3>${esc(e.name)}</h3><small>${plural(state.data.teams.filter((t) => t.entity_id === e.id).length, "team")} · ${plural(people.length, "person").replace("persons", "people")}</small></div><div class="entity-data">${done}<span class="muted"> / ${people.length}</span><small>completed</small></div><div class="entity-progress"><progress value="${done}" max="${Math.max(people.length, 1)}" aria-label="${esc(e.name)} assessment completion"></progress></div></div>`;
-    }).join("") : empty("Give your workspace a shape", "Create an entity and team to start discovering how work happens.", '<button class="button small" data-action="add-entity">' + icon("plus") + "Add entity</button>", "building")}</section>
-    <section class="panel next-steps"><div class="panel-header"><div><h3>Your path to a pilot</h3><p>Three steps to a useful agent</p></div>${icon("route")}</div><ol class="discovery-steps">${[
-      [hasTeams, "Map your organization", "Connect entities, teams, and people.", "organization"],
-      [completed > 0, "Understand the work", "Collect tools, workflows, and friction.", "people"],
-      [opportunities.length > 0, "Discover agent opportunities", "Review the evidence and potential impact.", "roadmap"],
+      return `<div class="entity-row"><span class="entity-icon">${icon("building")}</span><div><h3>${esc(e.name)}</h3><small>${plural(state.data.teams.filter((t) => t.entity_id === e.id).length, "team")} · ${plural(people.length, "person")}</small></div><div class="entity-data">${done}<span class="muted"> / ${people.length}</span><small>${tr("completed")}</small></div><div class="entity-progress"><progress value="${done}" max="${Math.max(people.length, 1)}" aria-label="${tr("{0} assessment completion", esc(e.name))}"></progress></div></div>`;
+    }).join("") : empty(tr("Give your workspace a shape"), tr("Create an entity and team to start discovering how work happens."), isAdmin() ? `<button class="button small" data-action="add-entity">` + icon("plus") + `${tr("Add entity")}</button>` : "", "building")}</section>
+    <section class="panel next-steps"><div class="panel-header"><div><h3>${tr("Your path to a pilot")}</h3><p>${tr("Three steps to a useful agent")}</p></div>${icon("route")}</div><ol class="discovery-steps">${[
+      [hasTeams, tr("Map your organization"), tr("Connect entities, teams, and people."), "organization"],
+      [completed > 0, tr("Understand the work"), tr("Collect tools, workflows, and friction."), "people"],
+      [opportunities.length > 0, tr("Discover agent opportunities"), tr("Review the evidence and potential impact."), "roadmap"],
     ].map(([done, title, description, route], i) => `<li class="${done ? "done" : ""}"><span class="step-dot">${done ? icon("check") : String(i + 1).padStart(2, "0")}</span><a href="#${route}"><strong>${title}</strong><span>${description}</span></a>${icon("chevron")}</li>`).join("")}</ol></section></div>
-    <div class="section-heading"><div><h2>People & assessments</h2><p>The people bringing your workflows into focus.</p></div><a href="#people" class="text-link">View all people ${icon("arrow")}</a></div>${peopleTable(employees.slice(0, 5))}`;
+    <div class="section-heading"><div><h2>${tr("People & assessments")}</h2><p>${tr("The people bringing your workflows into focus.")}</p></div><a href="#people" class="text-link">${tr("View all people {0}", icon("arrow"))}</a></div>${peopleTable(employees.slice(0, 5))}`;
 }
 function agentCard(o) {
-  return `<article class="agent-card"><div class="agent-top"><span class="agent-symbol">${icon("nodes")}</span><span class="tag ${o.priority === "High" ? "green" : o.priority === "Medium" ? "amber" : "blue"}"><i class="priority-dot"></i>${esc(o.priority)} priority</span></div><h3>${esc(o.name)}</h3><div class="agent-meta">${esc(o.entity_name)} / ${esc(o.team_name)}</div><p class="agent-description">Help with ${esc(o.actions.slice(0, 3).map((a) => a.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())).join(", "))}.</p><div class="tool-chips">${o.tools.slice(0, 4).map((t) => `<span class="tool-chip"><span class="tool-letter">${esc(t[0])}</span>${esc(t)}</span>`).join("")}${o.tools.length > 4 ? `<span class="tool-chip">+${o.tools.length - 4}</span>` : ""}${!o.tools.length ? '<span class="tag">Integration to explore</span>' : ""}</div><div class="agent-evidence"><span>${icon("route")}${plural(o.evidence.length, "source workflow")}</span><span>${icon(o.human_review ? "shield" : "people")}${o.human_review ? "Human review required" : plural(o.people.length, "person").replace("persons", "people") + " supported"}</span></div><div class="agent-footer"><div class="agent-impact"><strong>~${o.estimated_hours.toFixed(1)}<span>h</span></strong><span> / week potential</span></div><button class="text-link" data-action="agent-detail" data-id="${o.id}">Explore opportunity ${icon("arrow")}</button></div></article>`;
+  return `<article class="agent-card"><div class="agent-top"><span class="agent-symbol">${icon("nodes")}</span><span class="tag ${o.priority === "High" ? "green" : o.priority === "Medium" ? "amber" : "blue"}"><i class="priority-dot"></i>${tr("{0} priority", esc(tr(o.priority)))}</span></div><h3>${esc(opportunityName(o))}</h3><div class="agent-meta">${esc(o.entity_name)} / ${esc(o.team_name)}</div><p class="agent-description">${tr("Help with {0}.", esc(o.actions.slice(0, 3).join(", ")))}</p><div class="tool-chips">${o.tools.slice(0, 4).map((t) => `<span class="tool-chip"><span class="tool-letter">${esc(t[0])}</span>${esc(t)}</span>`).join("")}${o.tools.length > 4 ? `<span class="tool-chip">+${o.tools.length - 4}</span>` : ""}${!o.tools.length ? `<span class="tag">${tr("Integration to explore")}</span>` : ""}</div><div class="agent-evidence"><span>${icon("route")}${plural(o.evidence.length, "source workflow")}</span><span>${icon(o.human_review ? "shield" : "people")}${o.human_review ? tr("Human review required") : tr("People supported: {0}", formatNumber(o.people.length))}</span></div><div class="agent-footer"><div class="agent-impact"><strong>~${formatNumber(o.estimated_hours, 1)}<span>${tr("h")}</span></strong><span> ${tr("/ week potential")}</span></div><button class="text-link" data-action="agent-detail" data-id="${o.id}">${tr("Explore opportunity {0}", icon("arrow"))}</button></div></article>`;
 }
 function peopleTable(people) {
   if (!people.length)
-    return `<div class="panel">${empty("Bring your people into the picture", "Invite an employee, assign their team, and share their private assessment link.", inviteButton, "people")}</div>`;
-  return `<div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Employee</th><th>Entity / team</th><th>Assessment</th><th>Workflows</th><th>Actions</th></tr></thead><tbody>${people.map((p) => `<tr><td><div class="person-cell"><span class="avatar">${esc(initials(p.name))}</span><div><strong>${esc(p.name)}</strong><small>${esc(p.role)}</small></div></div></td><td>${esc(p.entity_name)}<div class="small muted">${esc(p.team_name)}</div></td><td>${statusTag(p.status)}</td><td>${p.workflow_count || "—"}</td><td><div class="table-actions"><button class="icon-button" data-action="edit-person" data-id="${p.id}" title="Edit employee" aria-label="Edit ${esc(p.name)}">${icon("edit")}</button>${p.status !== "invited" ? `<button class="icon-button" data-action="view-assessment" data-id="${p.id}" title="View assessment" aria-label="View assessment for ${esc(p.name)}">${icon("route")}</button>` : ""}<button class="button small" data-action="issue-invite" data-id="${p.id}">${icon("link")}Invite link</button></div></td></tr>`).join("")}</tbody></table></div><div class="table-footer"><span>${plural(people.length, "employee")}</span><span>Private assessment links · Valid for 30 days</span></div></div>`;
+    return `<div class="panel">${empty(tr("Bring your people into the picture"), tr("Invite an employee, assign their team, and share their private assessment link."), inviteButton(), "people")}</div>`;
+  return `<div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>${tr("Employee")}</th><th>${tr("Entity / team")}</th><th>${tr("Assessment")}</th><th>${tr("Workflows")}</th><th>${tr("Actions")}</th></tr></thead><tbody>${people.map((p) => `<tr><td><div class="person-cell"><span class="avatar">${esc(initials(p.name))}</span><div><strong>${esc(p.name)}</strong><small>${esc(p.role)}</small></div></div></td><td>${esc(p.entity_name)}<div class="small muted">${esc(p.team_name)}</div></td><td>${statusTag(p.status)}</td><td>${p.workflow_count || "—"}</td><td><div class="table-actions"><button class="icon-button" data-action="edit-person" data-id="${p.id}" title="${tr("Edit employee")}" aria-label="${tr("Edit {0}", esc(p.name))}">${icon("edit")}</button>${p.status !== "invited" ? `<button class="icon-button" data-action="view-assessment" data-id="${p.id}" title="${tr("View assessment")}" aria-label="${tr("View assessment for {0}", esc(p.name))}">${icon("route")}</button>` : ""}<button class="button small" data-action="issue-invite" data-id="${p.id}">${tr("{0}Invite link", icon("link"))}</button></div></td></tr>`).join("")}</tbody></table></div><div class="table-footer"><span>${plural(people.length, "employee")}</span><span>${tr("Private assessment links · Valid for 30 days")}</span></div></div>`;
 }
 function renderPeople() {
   const { employees } = filterData();
@@ -286,58 +344,69 @@ function renderPeople() {
       .includes(state.search.toLowerCase()),
   );
   $("#content").innerHTML =
-    `${pageHeading("Listen to your people", "People & assessments", "Invite each employee to share their tools and workflows. Keep everyone connected to the right team.", inviteButton)}<div class="section-heading"><div class="search"><label class="screen-reader" for="people-search">Search employees</label>${icon("search")}<input id="people-search" placeholder="Search name, role, or email…" value="${esc(state.search)}"></div>${filters()}</div><div id="people-results">${peopleTable(found)}</div>`;
+    `${pageHeading(tr("Listen to your people"), tr("People & assessments"), tr("Invite each employee to share their tools and workflows. Keep everyone connected to the right team."), inviteButton())}<div class="section-heading"><div class="search"><label class="screen-reader" for="people-search">${tr("Search employees")}</label>${icon("search")}<input id="people-search" placeholder="${tr("Search name, role, or email…")}" value="${esc(state.search)}"></div>${filters()}</div><div id="people-results">${peopleTable(found)}</div>`;
 }
 function renderOrganization() {
   const { entities, teams, employees } = state.data;
+  const admin = isAdmin();
   $("#content").innerHTML =
-    `${pageHeading("The structure behind the work", "Your organization", "Create entities and their teams, then connect every employee to the people they work with.", '<button class="button primary" data-action="add-entity">' + icon("plus") + "Add entity</button>")}
-  ${
-    entities.length
+    `${pageHeading(tr("The structure behind the work"), tr("Your organization"), tr("Create entities and their teams, then connect every employee to the people they work with."), admin ? `<button class="button primary" data-action="add-entity">` + icon("plus") + `${tr("Add entity")}</button>` : "")}
+  ${entities.length
       ? `<div class="organization-grid">${entities
           .map(
             (e) =>
-              `<section class="panel"><div class="panel-header"><div class="org-entity-name"><span class="entity-icon">${icon("building")}</span><div><h2>${esc(e.name)}</h2><p>${plural(employees.filter((p) => p.entity_id === e.id).length, "employee")}</p></div></div><div class="table-actions"><button class="icon-button" data-action="edit-entity" data-id="${e.id}" title="Rename entity" aria-label="Rename ${esc(e.name)}">${icon("edit")}</button>${deleteButton(`/api/admin/entities/${e.id}`, e.name, `Delete the ${e.name} entity?`)}<button class="button small" data-action="add-team" data-id="${e.id}">${icon("plus")}Add team</button></div></div>${
-                teams
+              `<section class="panel"><div class="panel-header"><div class="org-entity-name"><span class="entity-icon">${icon("building")}</span><div><h2>${esc(e.name)}</h2><p>${plural(employees.filter((p) => p.entity_id === e.id).length, "employee")}</p></div></div><div class="table-actions">${admin ? `<button class="icon-button" data-action="edit-entity" data-id="${e.id}" title="${tr("Rename entity")}" aria-label="${tr("Rename {0}", esc(e.name))}">${icon("edit")}</button>${deleteButton(`/api/admin/entities/${e.id}`, e.name, tr("Delete the {0} entity?", e.name))}` : ""}<button class="button small" data-action="add-team" data-id="${e.id}">${tr("{0}Add team", icon("plus"))}</button></div></div>${teams
                   .filter((t) => t.entity_id === e.id)
                   .map(
                     (t) =>
-                      `<div class="team-row"><span>${esc(t.name)}</span><div class="table-actions"><span class="tag">${plural(employees.filter((p) => p.team_id === t.id).length, "person").replace("persons", "people")}</span><button class="icon-button" data-action="edit-team" data-id="${t.id}" title="Edit team" aria-label="Edit ${esc(t.name)}">${icon("edit")}</button>${deleteButton(`/api/admin/teams/${t.id}`, t.name, `Delete the ${t.name} team?`)}</div></div>`,
+                      `<div class="team-row"><span>${esc(t.name)}</span><div class="table-actions"><span class="tag">${plural(employees.filter((p) => p.team_id === t.id).length, "person")}</span><button class="icon-button" data-action="edit-team" data-id="${t.id}" title="${tr("Edit team")}" aria-label="${tr("Edit {0}", esc(t.name))}">${icon("edit")}</button>${deleteButton(`/api/admin/teams/${t.id}`, t.name, tr("Delete the {0} team?", t.name))}</div></div>`,
                   )
                   .join("") ||
-                '<p class="muted small">No teams yet. Add a team to invite your first employee.</p>'
-              }</section>`,
+                `<p class="muted small">${tr("No teams yet. Add a team to invite your first employee.")}</p>`}</section>`,
           )
-          .join("")}</div>`
-      : `<div class="onboarding-list">${[
+          .join("")}</div>${admin ? collaboratorsPanel() : ""}`
+      : !admin
+        ? `<div class="panel">${empty(tr("No entities shared with you yet"), tr("Ask the workspace administrator to give you access to an entity."), "", "building")}</div>`
+        : `<div class="onboarding-list">${[
           [
             "01",
-            "Create an entity",
-            "An entity can be a business unit, department, or legal company.",
+            tr("Create an entity"),
+            tr("An entity can be a business unit, department, or legal company."),
             "add-entity",
-            "Add your first entity",
+            tr("Add your first entity"),
           ],
           [
             "02",
-            "Build your teams",
-            "Group people into the teams where their day-to-day work happens.",
+            tr("Build your teams"),
+            tr("Group people into the teams where their day-to-day work happens."),
             "add-team",
-            "Add a team",
+            tr("Add a team"),
           ],
           [
             "03",
-            "Start the conversation",
-            "Invite your people to share their digital tools and simple workflows.",
+            tr("Start the conversation"),
+            tr("Invite your people to share their digital tools and simple workflows."),
             "add-person",
-            "Invite an employee",
+            tr("Invite an employee"),
           ],
         ]
           .map(
             ([n, t, d, a, l]) =>
-              `<div class="onboard-step"><div class="number">${n} / GET STARTED</div><h3>${t}</h3><p>${d}</p><button class="button small" data-action="${a}">${icon("plus")}${l}</button></div>`,
+              `<div class="onboard-step"><div class="number">${tr("{0} / GET STARTED", n)}</div><h3>${t}</h3><p>${d}</p><button class="button small" data-action="${a}">${icon("plus")}${l}</button></div>`,
           )
-          .join("")}</div>`
-  }`;
+          .join("")}</div>`}`;
+}
+function collaboratorsPanel() {
+  const { collaborators, entities } = state.data;
+  const names = (ids) => entities.filter((e) => ids.includes(e.id)).map((e) => esc(e.name)).join(", ");
+  return `<div class="section-heading"><div><h2>${tr("Collaborators")}</h2><p>${tr("People who help manage selected entities: their teams, employees, invitations, and results. They cannot see other entities.")}</p></div><button class="button" data-action="collaborator">${tr("{0}Invite collaborator", icon("plus"))}</button></div><div class="panel">${
+    collaborators
+      .map(
+        (c) =>
+          `<div class="team-row"><span><strong>${esc(c.name)}</strong> <span class="muted">${esc(c.email)}</span><span class="small muted collaborator-entities">${names(c.entity_ids) || tr("No entities")}</span></span><div class="table-actions"><button class="icon-button" data-action="collaborator" data-id="${c.id}" title="${tr("Edit collaborator")}" aria-label="${tr("Edit {0}", esc(c.name))}">${icon("edit")}</button><button class="icon-button" data-action="collaborator-link" data-id="${c.id}" title="${tr("New sign-in link")}" aria-label="${tr("New sign-in link for {0}", esc(c.name))}">${icon("link")}</button>${deleteButton(`/api/admin/collaborators/${c.id}`, c.name, tr("Remove {0}? They lose access immediately.", c.name))}</div></div>`,
+      )
+      .join("") || `<p class="muted small">${tr("No collaborators yet.")}</p>`
+  }</div>`;
 }
 function renderTools() {
   const { employees } = filterData();
@@ -349,21 +418,19 @@ function renderTools() {
   const known = new Set(catalog.map((t) => t.name.toLowerCase()));
   for (const t of usage.keys())
     if (!known.has(t.toLowerCase()))
-      catalog.push({ name: t, category: "Custom tools" });
+      catalog.push({ name: t, category: tr("Custom tools") });
   const groups = [...new Set(catalog.map((t) => t.category))];
   $("#content").innerHTML =
-    `${pageHeading("Understand your digital ecosystem", "The tools behind the work", "See which digital tools your people use and where future agents will need to connect. Edit the list employees choose from.", `<button class="button primary" data-action="new-tool">${icon("plus")}Add tool</button>`)}<div class="section-heading"><div><h2>${usage.size} tools reported</h2><p>Usage includes saved drafts and completed assessments.</p></div>${filters()}</div><div class="catalog-grid">${groups
+    `${pageHeading(tr("Understand your digital ecosystem"), tr("The tools behind the work"), tr("See which digital tools your people use and where future agents will need to connect. Edit the list employees choose from."), isAdmin() ? `<button class="button primary" data-action="new-tool">${tr("{0}Add tool", icon("plus"))}</button>` : "")}<div class="section-heading"><div><h2>${tr("{0} tools reported", usage.size)}</h2><p>${tr("Usage includes saved drafts and completed assessments.")}</p></div>${filters()}</div><div class="catalog-grid">${groups
       .map(
         (g) =>
-          `<section class="panel"><h3>${esc(g)}</h3>${catalog
+          `<section class="panel"><h3>${esc(categoryLabel(g))}</h3>${catalog
             .filter((t) => t.category === g)
             .map(
               (t) =>
-                `<div class="catalog-tool"><span class="tool-letter">${esc(t.name[0])}</span><span>${esc(t.name)}</span><span class="tag ${usage.has(t.name) ? "green" : ""}">${usage.get(t.name) || 0} ${usage.get(t.name) === 1 ? "person" : "people"}</span>${
-                  t.id
-                    ? `<button class="icon-button" data-action="edit-tool" data-id="${t.id}" title="Edit tool" aria-label="Edit ${esc(t.name)}">${icon("edit")}</button>${deleteButton(`/api/admin/tools/${t.id}`, t.name, `Remove ${t.name} from the tools list? Employees who already chose it keep it in their answers.`)}`
-                    : `<button class="icon-button" data-action="new-tool" data-name="${esc(t.name)}" title="Add to the tools list" aria-label="Add ${esc(t.name)} to the tools list">${icon("plus")}</button>`
-                }</div>`,
+                `<div class="catalog-tool"><span class="tool-letter">${esc(t.name[0])}</span><span>${esc(t.name)}</span><span class="tag ${usage.has(t.name) ? "green" : ""}">${plural(usage.get(t.name) || 0, "person")}</span>${!isAdmin() ? "" : t.id
+                    ? `<button class="icon-button" data-action="edit-tool" data-id="${t.id}" title="${tr("Edit tool")}" aria-label="${tr("Edit {0}", esc(t.name))}">${icon("edit")}</button>${deleteButton(`/api/admin/tools/${t.id}`, t.name, tr("Remove {0} from the tools list? Employees who already chose it keep it in their answers.", t.name))}`
+                    : `<button class="icon-button" data-action="new-tool" data-name="${esc(t.name)}" title="${tr("Add to the tools list")}" aria-label="${tr("Add {0} to the tools list", esc(t.name))}">${icon("plus")}</button>`}</div>`,
             )
             .join("")}</section>`,
       )
@@ -372,65 +439,81 @@ function renderTools() {
 function renderRoadmap() {
   const { opportunities } = filterData();
   $("#content").innerHTML =
-    `${pageHeading("Turn understanding into action", "Your next agent opportunities", "Explore the work an agent could support, who it would help, and the tools it would need.", '<button class="button" data-action="export">' + icon("download") + "Export opportunities</button>")}<div class="section-heading"><div><h2>${plural(opportunities.length, "opportunity").replace("opportunitys", "opportunities")}</h2><p>Ranked by estimated weekly time that could be returned to your teams.</p></div>${filters()}</div>${opportunities.length ? `<div class="opportunity-grid">${opportunities.map(agentCard).join("")}</div><div class="panel"><p class="method-note">${icon("info")}Planning estimates: 50% of assisted step time, 70% of automated step time, and 50% when human review is required. Manual steps contribute no estimated savings. Matching workflow names within a team are grouped. These proposals need integration, permission, and feasibility checks before implementation.</p></div>` : `<div class="panel">${empty("A roadmap built from real work", "Completed employee assessments will create suggestions here. Steps marked “Human only” stay with your people.", '<a class="button" href="#people">View assessments' + icon("arrow") + "</a>", "robot")}</div>`}`;
+    `${pageHeading(tr("Turn understanding into action"), tr("Your next agent opportunities"), tr("Explore the work an agent could support, who it would help, and the tools it would need."), `<button class="button" data-action="export">` + icon("download") + `${tr("Export opportunities")}</button>`)}<div class="section-heading"><div><h2>${plural(opportunities.length, "opportunity")}</h2><p>${tr("Ranked by estimated weekly time that could be returned to your teams.")}</p></div>${filters()}</div>${opportunities.length ? `<div class="opportunity-grid">${opportunities.map(agentCard).join("")}</div><div class="panel"><p class="method-note">${tr("{0}Planning estimates: 50% of assisted step time, 70% of automated step time, and 50% when human review is required. Manual steps contribute no estimated savings. Matching workflow names within a team are grouped. These proposals need integration, permission, and feasibility checks before implementation.", icon("info"))}</p></div>` : `<div class="panel">${empty(tr("A roadmap built from real work"), tr("Completed employee assessments will create suggestions here. Steps marked “Human only” stay with your people."), `<a class="button" href="#people">${tr("View assessments")}` + icon("arrow") + `</a>`, "robot")}</div>`}`;
 }
 function showModal(title, subtitle, body, footer = "") {
-  modal.innerHTML = `<div class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2><p>${esc(subtitle)}</p></div><button class="icon-button" data-action="close-modal" aria-label="Close dialog">${icon("close")}</button></div>${body}${footer}`;
+  modal.innerHTML = `<div class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2><p>${esc(subtitle)}</p></div><button class="icon-button" data-action="close-modal" aria-label="${tr("Close dialog")}">${icon("close")}</button></div>${body}${footer}`;
   if (!modal.open) modal.showModal();
 }
 const modalError =
-  '<div class="alert error" id="modal-error" role="alert" hidden></div>';
-const formFooter = (label = "Save", extra = "") =>
-  `<div class="modal-footer">${extra}<button class="button" type="button" data-action="close-modal">Cancel</button><button class="button primary" type="submit">${label}${icon("arrow")}</button></div>`;
+  `<div class="alert error" id="modal-error" role="alert" hidden></div>`;
+const formFooter = (label = tr("Save"), extra = "") =>
+  `<div class="modal-footer">${extra}<button class="button" type="button" data-action="close-modal">${tr("Cancel")}</button><button class="button primary" type="submit">${label}${icon("arrow")}</button></div>`;
 const deleteButton = (path, name, question) =>
-  `<button class="icon-button" type="button" data-action="delete" data-path="${path}" data-confirm="${esc(question)}" title="Delete" aria-label="Delete ${esc(name)}">${icon("trash")}</button>`;
+  `<button class="icon-button" type="button" data-action="delete" data-path="${path}" data-confirm="${esc(question)}" title="${tr("Delete")}" aria-label="${tr("Delete {0}", esc(name))}">${icon("trash")}</button>`;
 function entityModal(id) {
   const entity = state.data?.entities.find((e) => e.id === +id);
   showModal(
-    entity ? "Rename entity" : "Add an entity",
-    "A business unit, department, or company within your organization.",
-    `<form id="entity-form" data-id="${entity?.id || ""}"><div class="modal-body">${modalError}<div class="field"><label for="entity-name">Entity name</label><input id="entity-name" name="name" value="${esc(entity?.name)}" placeholder="e.g. Operations" required maxlength="160" autofocus></div></div>${formFooter(entity ? "Save entity" : "Create entity")}</form>`,
+    entity ? tr("Rename entity") : tr("Add an entity"),
+    tr("A business unit, department, or company within your organization."),
+    `<form id="entity-form" data-id="${entity?.id || ""}"><div class="modal-body">${modalError}<div class="field"><label for="entity-name">${tr("Entity name")}</label><input id="entity-name" name="name" value="${esc(entity?.name)}" placeholder="${tr("e.g. Operations")}" required maxlength="160" autofocus></div></div>${formFooter(entity ? tr("Save entity") : tr("Create entity"))}</form>`,
   );
 }
 function teamModal(entityId = "", id) {
   if (!state.data.entities.length) {
-    toast("Create an entity first, then add its teams.");
+    toast(tr("Create an entity first, then add its teams."));
     entityModal();
     return;
   }
   const team = state.data.teams.find((t) => t.id === +id);
   if (team) entityId = team.entity_id;
   showModal(
-    team ? "Edit team" : "Add a team",
+    team ? tr("Edit team") : tr("Add a team"),
     team
-      ? "Rename the team or move it to another entity. Its employees move with it."
-      : "Every employee will be assigned to a team within an entity.",
-    `<form id="team-form" data-id="${team?.id || ""}"><div class="modal-body">${modalError}<div class="field"><label for="team-entity">Entity</label><select id="team-entity" name="entity_id" required>${state.data.entities.map((e) => `<option value="${e.id}" ${e.id === +entityId ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select></div><div class="field"><label for="team-name">Team name</label><input id="team-name" name="name" value="${esc(team?.name)}" placeholder="e.g. Customer Success" required maxlength="160"></div></div>${formFooter(team ? "Save team" : "Create team")}</form>`,
+      ? tr("Rename the team or move it to another entity. Its employees move with it.")
+      : tr("Every employee will be assigned to a team within an entity."),
+    `<form id="team-form" data-id="${team?.id || ""}"><div class="modal-body">${modalError}<div class="field"><label for="team-entity">${tr("Entity")}</label><select id="team-entity" name="entity_id" required>${state.data.entities.map((e) => `<option value="${e.id}" ${e.id === +entityId ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select></div><div class="field"><label for="team-name">${tr("Team name")}</label><input id="team-name" name="name" value="${esc(team?.name)}" placeholder="${tr("e.g. Customer Success")}" required maxlength="160"></div></div>${formFooter(team ? tr("Save team") : tr("Create team"))}</form>`,
   );
 }
 function personModal(id) {
   if (!state.data.teams.length) {
-    toast("Create an entity and a team before adding employees.");
+    toast(tr("Create an entity and a team before adding employees."));
     teamModal();
     return;
   }
   const person = state.data.employees.find((p) => p.id === +id);
   const entityId = person?.entity_id || state.data.teams[0].entity_id;
   showModal(
-    person ? "Edit employee" : "Invite an employee",
-    "Match this person to their entity and team. Then share their private assessment link.",
-    `<form id="person-form" data-id="${person?.id || ""}"><div class="modal-body">${modalError}<div class="form-grid"><div class="field full"><label for="person-name">Full name</label><input id="person-name" name="name" value="${esc(person?.name)}" placeholder="e.g. Alex Morgan" required maxlength="160"></div><div class="field"><label for="person-email">Work email</label><input id="person-email" name="email" type="email" value="${esc(person?.email)}" placeholder="alex@company.com" required maxlength="254"></div><div class="field"><label for="person-role">Role / job title</label><input id="person-role" name="role" value="${esc(person?.role)}" placeholder="e.g. Operations manager" required maxlength="160"></div><div class="field"><label for="person-entity">Entity</label><select id="person-entity" required>${state.data.entities.map((e) => `<option value="${e.id}" ${e.id === entityId ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select></div><div class="field"><label for="person-team">Team</label><select id="person-team" name="team_id" required>${teamOptions(entityId, person?.team_id)}</select></div></div><div class="readonly-note">${person ? "Saved workflows follow this employee if their team changes." : "You’ll get a private link to copy and share with this employee. No email is sent automatically."}</div></div>${formFooter(person ? "Save employee" : "Create invitation", person ? `<button class="button danger" type="button" data-action="delete" data-path="/api/admin/employees/${person.id}" data-confirm="${esc(`Delete ${person.name} and their saved assessment? This cannot be undone.`)}">${icon("trash")}Delete employee</button>` : "")}</form>`,
+    person ? tr("Edit employee") : tr("Invite an employee"),
+    tr("Match this person to their entity and team. Then share their private assessment link."),
+    `<form id="person-form" data-id="${person?.id || ""}"><div class="modal-body">${modalError}<div class="form-grid"><div class="field full"><label for="person-name">${tr("Full name")}</label><input id="person-name" name="name" value="${esc(person?.name)}" placeholder="${tr("e.g. Alex Morgan")}" required maxlength="160"></div><div class="field"><label for="person-email">${tr("Work email")}</label><input id="person-email" name="email" type="email" value="${esc(person?.email)}" placeholder="${tr("alex@company.com")}" required maxlength="254"></div><div class="field"><label for="person-role">${tr("Role / job title")}</label><input id="person-role" name="role" value="${esc(person?.role)}" placeholder="${tr("e.g. Operations manager")}" required maxlength="160"></div><div class="field"><label for="person-entity">${tr("Entity")}</label><select id="person-entity" required>${state.data.entities.map((e) => `<option value="${e.id}" ${e.id === entityId ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select></div><div class="field"><label for="person-team">${tr("Team")}</label><select id="person-team" name="team_id" required>${teamOptions(entityId, person?.team_id)}</select></div></div><div class="readonly-note">${person ? tr("Saved workflows follow this employee if their team changes.") : tr("You’ll get a private link to copy and share with this employee. No email is sent automatically.")}</div></div>${formFooter(person ? tr("Save employee") : tr("Create invitation"), person ? `<button class="button danger" type="button" data-action="delete" data-path="/api/admin/employees/${person.id}" data-confirm="${esc(tr("Delete {0} and their saved assessment? This cannot be undone.", person.name))}">${tr("{0}Delete employee", icon("trash"))}</button>` : "")}</form>`,
   );
 }
 function toolModal(id, name = "") {
   const tool = state.data.catalog.find((t) => t.id === +id);
   const categories = [...new Set(state.data.catalog.map((t) => t.category))];
   showModal(
-    tool ? "Edit tool" : "Add a tool",
+    tool ? tr("Edit tool") : tr("Add a tool"),
     tool
-      ? "Renaming also updates the answers employees already saved."
-      : "Employees will see it in the list of tools they choose from.",
-    `<form id="tool-form" data-id="${tool?.id || ""}"><div class="modal-body">${modalError}<div class="field"><label for="tool-name">Tool name</label><input id="tool-name" name="name" value="${esc(tool?.name ?? name)}" placeholder="e.g. Zendesk" required maxlength="160" autofocus></div><div class="field"><label for="tool-category">Category</label><input id="tool-category" name="category" list="tool-categories" value="${esc(tool?.category)}" placeholder="e.g. Business systems" required maxlength="160"><datalist id="tool-categories">${categories.map((c) => `<option value="${esc(c)}"></option>`).join("")}</datalist></div></div>${formFooter(tool ? "Save tool" : "Add tool")}</form>`,
+      ? tr("Renaming also updates the answers employees already saved.")
+      : tr("Employees will see it in the list of tools they choose from."),
+    `<form id="tool-form" data-id="${tool?.id || ""}"><div class="modal-body">${modalError}<div class="field"><label for="tool-name">${tr("Tool name")}</label><input id="tool-name" name="name" value="${esc(tool?.name ?? name)}" placeholder="${tr("e.g. Zendesk")}" required maxlength="160" autofocus></div><div class="field"><label for="tool-category">${tr("Category")}</label><input id="tool-category" name="category" list="tool-categories" value="${esc(tool?.category)}" placeholder="${tr("e.g. Business systems")}" required maxlength="160"><datalist id="tool-categories">${categories.map((c) => `<option value="${esc(c)}"></option>`).join("")}</datalist></div></div>${formFooter(tool ? tr("Save tool") : tr("Add tool"))}</form>`,
+  );
+}
+function collaboratorModal(id) {
+  const collaborator = state.data.collaborators.find((c) => c.id === +id);
+  showModal(
+    collaborator ? tr("Edit collaborator") : tr("Invite a collaborator"),
+    tr("Choose the entities this person can manage. They will not see the others."),
+    `<form id="collaborator-form" data-id="${collaborator?.id || ""}"><div class="modal-body">${modalError}<div class="form-grid"><div class="field"><label for="collaborator-name">${tr("Full name")}</label><input id="collaborator-name" name="name" value="${esc(collaborator?.name)}" required maxlength="160" autofocus></div><div class="field"><label for="collaborator-email">${tr("Work email")}</label><input id="collaborator-email" name="email" type="email" value="${esc(collaborator?.email)}" required maxlength="254"></div></div><fieldset class="entity-choices"><legend>${tr("Entities they can manage")}</legend>${state.data.entities.map((e) => `<label class="checkbox-label"><input type="checkbox" name="entity_ids" value="${e.id}" ${collaborator?.entity_ids.includes(e.id) ? "checked" : ""}>${esc(e.name)}</label>`).join("")}</fieldset></div>${formFooter(collaborator ? tr("Save collaborator") : tr("Create sign-in link"))}</form>`,
+  );
+}
+function collaboratorLinkModal(name, invitation) {
+  const link = `${location.origin}/join#${invitation.token}`;
+  showModal(
+    tr("Sign-in link for {0}", name),
+    tr("Copy this private link and share it directly with the collaborator."),
+    `<div class="modal-body"><div class="alert">${tr("{0} This link signs in to the selected entities only. Keep it private.", icon("shield"))}</div><label for="invite-url">${tr("Collaborator sign-in link")}</label><input id="invite-url" class="invite-link" readonly value="${esc(link)}"><p class="small muted">${tr("Valid until {0}. Creating another link revokes the previous one.", new Date(invitation.expires_at * 1000).toLocaleDateString(currentLocale(), { dateStyle: "medium" }))}</p><div class="button-row"><button class="button primary" data-action="copy-invite">${tr("{0}Copy link", icon("copy"))}</button></div></div><div class="modal-footer"><button class="button" data-action="close-modal">${tr("Done")}</button></div>`,
   );
 }
 // Admin forms that create with POST /api/admin/<path> and edit with PUT /api/admin/<path>/<id>.
@@ -438,6 +521,7 @@ const adminForms = {
   "entity-form": ["entities", "Entity", "Entity created. Add a team to invite your people."],
   "team-form": ["teams", "Team", "Team created. You can now invite employees."],
   "tool-form": ["tools", "Tool", "Tool added. Employees can now choose it."],
+  "collaborator-form": ["collaborators", "Collaborator"],
 };
 function teamOptions(entityId, selected) {
   const teams = state.data.teams.filter((t) => t.entity_id === +entityId);
@@ -448,23 +532,23 @@ function teamOptions(entityId, selected) {
             `<option value="${t.id}" ${t.id === selected ? "selected" : ""}>${esc(t.name)}</option>`,
         )
         .join("")
-    : '<option value="">No teams in this entity</option>';
+    : `<option value="">${tr("No teams in this entity")}</option>`;
 }
 function invitationModal(personId, invitation) {
   const person = state.data.employees.find((p) => p.id === +personId);
   const link = `${location.origin}/intake#${invitation.token}`;
   showModal(
-    `An invitation for ${person?.name || "your employee"}`,
-    "Copy this private link and share it directly with the employee.",
-    `<div class="modal-body"><div class="alert">${icon("shield")} This link opens only this person’s assessment. Keep it private.</div><label for="invite-url">Employee assessment link</label><input id="invite-url" class="invite-link" readonly value="${esc(link)}"><p class="small muted">Valid until ${new Date(invitation.expires_at * 1000).toLocaleDateString(undefined, { dateStyle: "medium" })}. Creating another link revokes the previous one.</p><div class="button-row"><button class="button primary" data-action="copy-invite">${icon("copy")}Copy link</button><a class="button" href="${esc(link)}" target="_blank" rel="noreferrer">Open assessment ${icon("arrow")}</a></div></div><div class="modal-footer"><button class="button" data-action="close-modal">Done</button></div>`,
+    tr("An invitation for {0}", person?.name || tr("your employee")),
+    tr("Copy this private link and share it directly with the employee."),
+    `<div class="modal-body"><div class="alert">${tr("{0} This link opens only this person’s assessment. Keep it private.", icon("shield"))}</div><label for="invite-url">${tr("Employee assessment link")}</label><input id="invite-url" class="invite-link" readonly value="${esc(link)}"><p class="small muted">${tr("Valid until {0}. Creating another link revokes the previous one.", new Date(invitation.expires_at * 1000).toLocaleDateString(currentLocale(), { dateStyle: "medium" }))}</p><div class="button-row"><button class="button primary" data-action="copy-invite">${tr("{0}Copy link", icon("copy"))}</button><a class="button" href="${esc(link)}" target="_blank" rel="noreferrer">${tr("Open assessment {0}", icon("arrow"))}</a></div></div><div class="modal-footer"><button class="button" data-action="close-modal">${tr("Done")}</button></div>`,
   );
 }
 function issueInviteModal(id) {
   const person = state.data.employees.find((p) => p.id === +id);
   showModal(
-    "Manage private invitation",
-    `Invitation for ${person.name}`,
-    `<div class="modal-body"><p class="small muted">Create a fresh private link to share. The previous link will stop working immediately. Saved answers are preserved.</p><div class="alert info">${person.invite_expires ? `Current link ${person.invite_expires * 1000 > Date.now() ? "expires" : "expired"} on ${new Date(person.invite_expires * 1000).toLocaleDateString()}.` : "No active invitation."}</div>${modalError}</div><div class="modal-footer">${person.invite_expires ? `<button class="button danger" data-action="revoke-invite" data-id="${id}">Revoke access</button>` : ""}<button class="button primary" data-action="confirm-invite" data-id="${id}">${icon("link")}Create new link</button></div>`,
+    tr("Manage private invitation"),
+    tr("Invitation for {0}", person.name),
+    `<div class="modal-body"><p class="small muted">${tr("Create a fresh private link to share. The previous link will stop working immediately. Saved answers are preserved.")}</p><div class="alert info">${person.invite_expires ? tr("Current link {0} on {1}.", person.invite_expires * 1000 > Date.now() ? tr("expires") : tr("expired"), new Date(person.invite_expires * 1000).toLocaleDateString(currentLocale())) : tr("No active invitation.")}</div>${modalError}</div><div class="modal-footer">${person.invite_expires ? `<button class="button danger" data-action="revoke-invite" data-id="${id}">${tr("Revoke access")}</button>` : ""}<button class="button primary" data-action="confirm-invite" data-id="${id}">${tr("{0}Create new link", icon("link"))}</button></div>`,
   );
 }
 const frequencyFactors = { day: 5, week: 1, month: 12 / 52, year: 1 / 52 };
@@ -476,68 +560,68 @@ function workflowFrequency(w) {
 }
 function frequencyLabel(w) {
   const { count, unit } = workflowFrequency(w);
-  return `${count} ${count === 1 ? "time" : "times"} per ${unit === "day" ? "workday" : unit}`;
+  return tr("{0} {1} per {2}", formatNumber(count), tr(count === 1 ? "time" : "times"), tr(unit === "day" ? "workday" : unit));
 }
 function frequencyControl(w, i) {
   const { count, unit } = workflowFrequency(w);
-  return `<fieldset class="field frequency-field"><legend>How often do you do this?</legend><div class="frequency-control"><label class="screen-reader" for="wf-${i}-frequency">Number of times</label><input id="wf-${i}-frequency" type="number" data-frequency="count" data-w="${i}" value="${count}" min="0.01" max="${1000 / frequencyFactors[unit]}" step="any" inputmode="decimal" required><label class="screen-reader" for="wf-${i}-period">Frequency period</label><select id="wf-${i}-period" data-frequency="unit" data-w="${i}">${Object.keys(
+  return `<fieldset class="field frequency-field"><legend>${tr("How often do you do this?")}</legend><div class="frequency-control"><label class="screen-reader" for="wf-${i}-frequency">${tr("Number of times")}</label><input id="wf-${i}-frequency" type="number" data-frequency="count" data-w="${i}" value="${count}" min="0.01" max="${1000 / frequencyFactors[unit]}" step="any" inputmode="decimal" required><label class="screen-reader" for="wf-${i}-period">${tr("Frequency period")}</label><select id="wf-${i}-period" data-frequency="unit" data-w="${i}">${Object.keys(
     frequencyFactors,
   )
     .map(
       (value) =>
-        `<option value="${value}" ${value === unit ? "selected" : ""}>per ${value === "day" ? "workday" : value}</option>`,
+        `<option value="${value}" ${value === unit ? "selected" : ""}>${tr("per {0}", tr(value === "day" ? "workday" : value))}</option>`,
     )
     .join(
       "",
-    )}</select></div><p class="field-hint">Use your typical schedule. A workday assumes 5 days a week.</p></fieldset>`;
+    )}</select></div><p class="field-hint">${tr("Use your typical schedule. A workday assumes 5 days a week.")}</p></fieldset>`;
 }
 function workflowSummary(w) {
-  return `<div class="workflow-summary"><h3>${esc(w.name || "Untitled workflow")}</h3><p>${esc(frequencyLabel(w))} · ${w.steps.reduce((n, s) => n + Number(s.minutes || 0), 0)} min / run</p>${w.trigger ? `<p><strong>Starts when:</strong> ${esc(w.trigger)}</p>` : ""}<div class="flow-line">${w.steps.map((s, i) => `${i ? icon("arrow") : ""}<span class="flow-node">${i + 1}. ${esc(s.action || "Untitled step")}</span>`).join("")}</div>${w.outcome ? `<p><strong>Outcome:</strong> ${esc(w.outcome)}</p>` : ""}${w.pain_points ? `<p><strong>Friction:</strong> ${esc(w.pain_points)}</p>` : ""}</div>`;
+  return `<div class="workflow-summary"><h3>${esc(w.name || tr("Untitled workflow"))}</h3><p>${tr("{0} · {1} min / run", esc(frequencyLabel(w)), formatNumber(w.steps.reduce((n, s) => n + Number(s.minutes || 0), 0)))}</p>${w.trigger ? `<p><strong>${tr("Starts when:")}</strong> ${esc(w.trigger)}</p>` : ""}<div class="flow-line">${w.steps.map((s, i) => `${i ? icon("arrow") : ""}<span class="flow-node">${i + 1}. ${esc(s.action || tr("Untitled step"))}</span>`).join("")}</div>${w.outcome ? `<p><strong>${tr("Outcome:")}</strong> ${esc(w.outcome)}</p>` : ""}${w.pain_points ? `<p><strong>${tr("Friction:")}</strong> ${esc(w.pain_points)}</p>` : ""}</div>`;
 }
 function agentDetail(id) {
   const o = state.data.opportunities.find((o) => o.id === +id);
   showModal(
-    o.name,
+    opportunityName(o),
     `${o.entity_name} / ${o.team_name}`,
-    `<div class="modal-body"><div class="button-row"><span class="tag green">${o.priority} priority</span><span class="tag outline">${plural(o.people.length, "employee")} supported</span></div><p class="agent-impact">Potential time back: <strong>~${o.estimated_hours.toFixed(1)}h / week</strong></p><p class="small muted">Current workflow effort: ${o.weekly_hours.toFixed(1)}h / week. ${esc(o.rationale)}</p><hr class="divider"><h3>What this agent could help with</h3><ul class="detail-list">${o.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul><h3>Tools to connect</h3><div class="tool-chips">${o.tools.map((t) => `<span class="tool-chip">${esc(t)}</span>`).join("") || '<span class="muted small">To explore with the team</span>'}</div><div class="alert ${o.human_review ? "info" : ""}">${icon("shield")} ${o.human_review ? "Human review is part of the source workflow. Preserve it in the pilot." : "Start with a human-reviewed pilot before allowing independent actions."}</div><h3>Supporting workflows</h3>${o.evidence.map((w) => `<div class="review-title">Shared by ${esc(w.employee)}</div>${workflowSummary(w)}`).join("")}<p class="readonly-note">Estimate = run frequency × step minutes × assistance factor. Assisted and human-review steps: 50%. Automated steps: 70%. Human-only steps: 0%. Equal workflow names in the same team are grouped. Validate access, integration availability, and quality with the team.</p></div><div class="modal-footer"><button class="button primary" data-action="close-modal">Done</button></div>`,
+    `<div class="modal-body"><div class="button-row"><span class="tag green">${tr("{0} priority", tr(o.priority))}</span><span class="tag outline">${tr("{0} supported", plural(o.people.length, "employee"))}</span></div><p class="agent-impact">${tr("Potential time back:")} <strong>${tr("~{0}h / week", formatNumber(o.estimated_hours, 1))}</strong></p><p class="small muted">${tr("Current workflow effort: {0}h / week. {1}", formatNumber(o.weekly_hours, 1), esc(tr(o.rationale)))}</p><hr class="divider"><h3>${tr("What this agent could help with")}</h3><ul class="detail-list">${o.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul><h3>${tr("Tools to connect")}</h3><div class="tool-chips">${o.tools.map((t) => `<span class="tool-chip">${esc(t)}</span>`).join("") || `<span class="muted small">${tr("To explore with the team")}</span>`}</div><div class="alert ${o.human_review ? "info" : ""}">${icon("shield")} ${o.human_review ? tr("Human review is part of the source workflow. Preserve it in the pilot.") : tr("Start with a human-reviewed pilot before allowing independent actions.")}</div><h3>${tr("Supporting workflows")}</h3>${o.evidence.map((w) => `<div class="review-title">${tr("Shared by {0}", esc(w.employee))}</div>${workflowSummary(w)}`).join("")}<p class="readonly-note">${tr("Estimate = run frequency × step minutes × assistance factor. Assisted and human-review steps: 50%. Automated steps: 70%. Human-only steps: 0%. Equal workflow names in the same team are grouped. Validate access, integration availability, and quality with the team.")}</p></div><div class="modal-footer"><button class="button primary" data-action="close-modal">${tr("Done")}</button></div>`,
   );
 }
 async function viewAssessment(id) {
   const p = state.data.employees.find((p) => p.id === +id);
   const a = await api(`/api/admin/employees/${id}/assessment`);
   showModal(
-    `${p.name}’s workflows`,
+    tr("{0}’s workflows", p.name),
     `${p.entity_name} / ${p.team_name}`,
-    `<div class="modal-body">${statusTag(a.status)}<div class="tool-chips">${a.tools.map((t) => `<span class="tool-chip">${esc(t)}</span>`).join("")}</div>${a.workflows.map(workflowSummary).join("") || '<p class="muted small">No workflows saved yet.</p>'}${a.notes ? `<h3>Additional context</h3><p class="small muted">${esc(a.notes)}</p>` : ""}<p class="readonly-note">Last saved ${new Date(a.updated_at * 1000).toLocaleString()}</p></div><div class="modal-footer"><button class="button" data-action="close-modal">Close</button></div>`,
+    `<div class="modal-body">${statusTag(a.status)}<div class="tool-chips">${a.tools.map((t) => `<span class="tool-chip">${esc(t)}</span>`).join("")}</div>${a.workflows.map(workflowSummary).join("") || `<p class="muted small">${tr("No workflows saved yet.")}</p>`}${a.notes ? `<h3>${tr("Additional context")}</h3><p class="small muted">${esc(a.notes)}</p>` : ""}<p class="readonly-note">${tr("Last saved {0}", new Date(a.updated_at * 1000).toLocaleString(currentLocale()))}</p></div><div class="modal-footer"><button class="button" data-action="close-modal">${tr("Close")}</button></div>`,
   );
 }
 function exportOpportunities() {
   const { opportunities } = filterData();
   if (!opportunities.length) {
-    toast("There are no opportunities to export yet.");
+    toast(tr("There are no opportunities to export yet."));
     return;
   }
   const rows = [
     [
-      "Suggested agent",
-      "Entity",
-      "Team",
-      "Priority",
-      "Potential hours / week",
-      "Employees",
-      "Tools",
-      "Human review",
-      "Suggested actions",
+      tr("Suggested agent"),
+      tr("Entity"),
+      tr("Team"),
+      tr("Priority"),
+      tr("Potential hours / week"),
+      tr("Employees"),
+      tr("Tools"),
+      tr("Human review"),
+      tr("Suggested actions"),
     ],
     ...opportunities.map((o) => [
-      o.name,
+      opportunityName(o),
       o.entity_name,
       o.team_name,
-      o.priority,
+      tr(o.priority),
       o.estimated_hours,
       o.people.join("; "),
       o.tools.join("; "),
-      o.human_review ? "Yes" : "Pilot recommended",
+      o.human_review ? tr("Yes") : tr("Pilot recommended"),
       o.actions.join("; "),
     ]),
   ];
@@ -561,10 +645,11 @@ function exportOpportunities() {
   a.download = "agent-atlas-opportunities.csv";
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  toast("Opportunities exported. Estimates are planning assumptions.");
+  toast(tr("Opportunities exported. Estimates are planning assumptions."));
 }
 function renderLogin() {
-  app.innerHTML = `<main class="login-shell"><section class="login-story">${brand}<div><div class="eyebrow">A clearer path from work to agents.</div><h1>Every workflow.<br>A new <span>possibility.</span></h1><p>Connect everyday workflows to a practical roadmap for agents that help your teams thrive.</p></div><footer>MAP THE WORK. FIND THE OPPORTUNITY.</footer></section><section class="login-form-side"><div class="login-card"><h2>Welcome back.</h2><p>Your next agent starts with a better understanding of the work.</p><form id="login-form"><div id="login-error" class="alert error" role="alert" hidden></div><div class="field"><label for="password">Workspace password</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your admin password" required><p class="field-hint">Use the workspace password provided by your administrator.</p></div><button class="button primary" type="submit">Open workspace ${icon("arrow")}</button></form><footer>${icon("shield")} Your company’s workflows stay in your own workspace.<br>Have an employee invitation? Open your private assessment link.</footer></div></section></main>`;
+  state.screen = "login";
+  app.innerHTML = `<main class="login-shell"><section class="login-story">${brand()}<div><div class="eyebrow">${tr("A clearer path from work to agents.")}</div><h1>${tr("Every workflow.")}<br>${tr("A new")} <span>${tr("possibility.")}</span></h1><p>${tr("Connect everyday workflows to a practical roadmap for agents that help your teams thrive.")}</p></div><footer>${tr("MAP THE WORK. FIND THE OPPORTUNITY.")}</footer></section><section class="login-form-side"><div class="login-card"><div class="login-language">${languagePicker()}</div><h2>${tr("Welcome back.")}</h2><p>${tr("Your next agent starts with a better understanding of the work.")}</p><form id="login-form"><div id="login-error" class="alert error" role="alert" hidden></div><div class="field"><label for="password">${tr("Workspace password")}</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="${tr("Enter your admin password")}" required><p class="field-hint">${tr("Use the workspace password provided by your administrator.")}</p></div><button class="button primary" type="submit">${tr("Open workspace {0}", icon("arrow"))}</button></form><footer>${tr("{0} Your company’s workflows stay in your own workspace.", icon("shield"))}<br>${tr("Have an employee invitation? Open your private assessment link.")}</footer></div></section></main>`;
 }
 async function loadWorkspace() {
   state.data = await api("/api/admin/workspace");
@@ -574,25 +659,26 @@ async function refresh() {
   renderShell();
 }
 function intakeHeader() {
-  return `<header class="intake-top">${brand}<span class="tag outline">${icon("shield")}Your private assessment</span></header>`;
+  return `<header class="intake-top">${brand()}<div class="intake-header-actions">${languagePicker()}<span class="tag outline">${tr("{0}Your private assessment", icon("shield"))}</span></div></header>`;
 }
 function renderIntake() {
+  state.screen = "intake";
   const p = state.intake.employee;
-  app.innerHTML = `${intakeHeader()}<main class="intake-container"><div class="intake-intro"><div class="eyebrow">Your work. Your perspective.</div><h1>Help shape a better workday, ${esc(p.name.split(" ")[0])}.</h1><p>Share the tools you use and the tasks you repeat. Together, we’ll find where helpful agents could give your team time back.</p><div class="employee-context"><span class="tag outline">${icon("people")}${esc(p.name)}</span><span class="tag outline">${esc(p.entity_name)} / ${esc(p.team_name)}</span><span class="tag outline">${esc(p.role)}</span></div></div><div class="wizard-progress" aria-label="Assessment progress">${["Your tools", "Your workflows", "Review & share"].map((l, i) => `${i ? '<div class="wizard-line"></div>' : ""}<div class="wizard-stop ${i === state.stage ? "active" : i < state.stage ? "done" : ""}" ${i === state.stage ? 'aria-current="step"' : ""}><span>${i < state.stage ? icon("check") : i + 1}</span>${l}</div>`).join("")}</div><form id="intake-form"><div id="intake-errors" class="alert error" role="alert" hidden></div><div id="intake-stage"></div></form></main>`;
+  app.innerHTML = `${intakeHeader()}<main class="intake-container"><div class="intake-intro"><div class="eyebrow">${tr("Your work. Your perspective.")}</div><h1>${tr("Help shape a better workday, {0}.", esc(p.name.split(" ")[0]))}</h1><p>${tr("Share the tools you use and the tasks you repeat. Together, we’ll find where helpful agents could give your team time back.")}</p><div class="employee-context"><span class="tag outline">${icon("people")}${esc(p.name)}</span><span class="tag outline">${esc(p.entity_name)} / ${esc(p.team_name)}</span><span class="tag outline">${esc(p.role)}</span></div></div><div class="wizard-progress" aria-label="${tr("Assessment progress")}">${[tr("Your tools"), tr("Your workflows"), tr("Review & share")].map((l, i) => `${i ? `<div class="wizard-line"></div>` : ""}<div class="wizard-stop ${i === state.stage ? "active" : i < state.stage ? "done" : ""}" ${i === state.stage ? 'aria-current="step"' : ""}><span>${i < state.stage ? icon("check") : i + 1}</span>${l}</div>`).join("")}</div><form id="intake-form"><div id="intake-errors" class="alert error" role="alert" hidden></div><div id="intake-stage"></div></form></main>`;
   renderIntakeStage();
 }
 function renderIntakeStage() {
   const a = state.intake.assessment;
   if (state.stage === 0) {
     $("#intake-stage").innerHTML =
-      `<section class="panel intake-panel"><h2>Which tools are part of your workday?</h2><p>Select everything you use regularly. You can add a tool if it isn’t listed.</p><div class="selected-tools" id="selected-tools"></div><div class="search"><label class="screen-reader" for="tool-search">Search digital tools</label>${icon("search")}<input id="tool-search" placeholder="Find a tool…" type="search"></div><div id="tool-options"></div><div class="custom-tool"><label class="screen-reader" for="custom-tool">Custom digital tool</label><input id="custom-tool" placeholder="Another tool you use…" maxlength="160"><button type="button" class="button" data-action="add-tool">${icon("plus")}Add tool</button></div></section>${wizardFooter()}`;
+      `<section class="panel intake-panel"><h2>${tr("Which tools are part of your workday?")}</h2><p>${tr("Select everything you use regularly. You can add a tool if it isn’t listed.")}</p><div class="selected-tools" id="selected-tools"></div><div class="search"><label class="screen-reader" for="tool-search">${tr("Search digital tools")}</label>${icon("search")}<input id="tool-search" placeholder="${tr("Find a tool…")}" type="search"></div><div id="tool-options"></div><div class="custom-tool"><label class="screen-reader" for="custom-tool">${tr("Custom digital tool")}</label><input id="custom-tool" placeholder="${tr("Another tool you use…")}" maxlength="160"><button type="button" class="button" data-action="add-tool">${tr("{0}Add tool", icon("plus"))}</button></div></section>${wizardFooter()}`;
     renderToolOptions();
   } else if (state.stage === 1) {
     $("#intake-stage").innerHTML =
-      `<div class="panel intake-panel"><h2>Walk us through your repeatable work.</h2><p>Think of a task you do regularly: preparing a report, processing a request, or following up with a customer. Describe it as a simple sequence of steps.</p><div class="alert info">${icon("info")} Use everyday language. Share the process, and keep passwords, customer records, and other sensitive details out of your examples.</div></div>${a.workflows.map(workflowEditor).join("")}<button type="button" class="button add-workflow" data-action="add-workflow">${icon("plus")}${a.workflows.length ? "Add another workflow" : "Describe your first workflow"}</button>${wizardFooter()}`;
+      `<div class="panel intake-panel"><h2>${tr("Walk us through your repeatable work.")}</h2><p>${tr("Think of a task you do regularly: preparing a report, processing a request, or following up with a customer. Describe it as a simple sequence of steps.")}</p><div class="alert info">${tr("{0} Use everyday language. Share the process, and keep passwords, customer records, and other sensitive details out of your examples.", icon("info"))}</div></div>${a.workflows.map(workflowEditor).join("")}<button type="button" class="button add-workflow" data-action="add-workflow">${icon("plus")}${a.workflows.length ? tr("Add another workflow") : tr("Describe your first workflow")}</button>${wizardFooter()}`;
   } else {
     $("#intake-stage").innerHTML =
-      `<section class="panel intake-panel"><h2>A little context. A lot of possibility.</h2><p>Review what you’ve shared. Your team will use this to explore helpful agents and choose practical pilots.</p><div class="review-title"><strong>Your digital tools</strong><button type="button" class="text-link" data-action="go-tools">Edit ${icon("edit")}</button></div><div class="tool-chips">${a.tools.map((t) => `<span class="tool-chip">${esc(t)}</span>`).join("") || '<span class="muted small">No tools selected</span>'}</div><div class="review-title"><strong>${plural(a.workflows.length, "workflow")}</strong><button type="button" class="text-link" data-action="go-workflows">Edit ${icon("edit")}</button></div>${a.workflows.map(workflowSummary).join("") || '<p class="small muted">Add at least one workflow before submitting.</p>'}<div class="field"><label for="assessment-notes">Anything else you’d like your team to know? <span class="muted">(optional)</span></label><textarea id="assessment-notes" data-field="notes" maxlength="2000" placeholder="What would make the biggest difference in your day?">${esc(a.notes)}</textarea></div><div class="alert">${icon("shield")} Your workspace administrator can see your answers. You can return using this link to update them.</div></section>${wizardFooter()}`;
+      `<section class="panel intake-panel"><h2>${tr("A little context. A lot of possibility.")}</h2><p>${tr("Review what you’ve shared. Your team will use this to explore helpful agents and choose practical pilots.")}</p><div class="review-title"><strong>${tr("Your digital tools")}</strong><button type="button" class="text-link" data-action="go-tools">${tr("Edit {0}", icon("edit"))}</button></div><div class="tool-chips">${a.tools.map((t) => `<span class="tool-chip">${esc(t)}</span>`).join("") || `<span class="muted small">${tr("No tools selected")}</span>`}</div><div class="review-title"><strong>${plural(a.workflows.length, "workflow")}</strong><button type="button" class="text-link" data-action="go-workflows">${tr("Edit {0}", icon("edit"))}</button></div>${a.workflows.map(workflowSummary).join("") || `<p class="small muted">${tr("Add at least one workflow before submitting.")}</p>`}<div class="field"><label for="assessment-notes">${tr("Anything else you’d like your team to know?")} <span class="muted">${tr("(optional)")}</span></label><textarea id="assessment-notes" data-field="notes" maxlength="2000" placeholder="${tr("What would make the biggest difference in your day?")}">${esc(a.notes)}</textarea></div><div class="alert">${tr("{0} Your workspace administrator can see your answers. You can return using this link to update them.", icon("shield"))}</div></section>${wizardFooter()}`;
   }
 }
 function renderToolOptions(search = "") {
@@ -601,12 +687,12 @@ function renderToolOptions(search = "") {
   const known = new Set(catalog.map((t) => t.name.toLowerCase()));
   a.tools
     .filter((t) => !known.has(t.toLowerCase()))
-    .forEach((t) => catalog.push({ name: t, category: "Your other tools" }));
+    .forEach((t) => catalog.push({ name: t, category: tr("Your other tools") }));
   const filtered = catalog.filter((t) =>
     t.name.toLowerCase().includes(search.toLowerCase()),
   );
   $("#selected-tools").innerHTML =
-    `<span class="tag green">${a.tools.length} selected</span>${a.tools
+    `<span class="tag green">${tr("{0} selected", a.tools.length)}</span>${a.tools
       .slice(0, 7)
       .map((t) => `<span class="tag">${esc(t)}</span>`)
       .join(
@@ -616,7 +702,7 @@ function renderToolOptions(search = "") {
     ? [...new Set(filtered.map((t) => t.category))]
         .map(
           (g) =>
-            `<div class="tool-category">${esc(g)}</div><div class="tools-grid">${filtered
+            `<div class="tool-category">${esc(categoryLabel(g))}</div><div class="tools-grid">${filtered
               .filter((t) => t.category === g)
               .map(
                 (t) =>
@@ -625,18 +711,18 @@ function renderToolOptions(search = "") {
               .join("")}</div>`,
         )
         .join("")
-    : '<p class="search-count">No matching tool. Add your own below.</p>';
+    : `<p class="search-count">${tr("No matching tool. Add your own below.")}</p>`;
 }
 function workflowEditor(w, i) {
   const field = (key) => `workflows.${i}.${key}`;
-  return `<section class="workflow-editor"><div class="workflow-title-row"><span class="workflow-number">WORKFLOW ${String(i + 1).padStart(2, "0")}</span><strong data-workflow-title="${i}">${esc(w.name || "Your everyday process")}</strong><span data-workflow-saved="${i}">${workflowSaveBadge(w)}</span><button class="icon-button" type="button" data-action="remove-workflow" data-w="${i}" aria-label="Remove workflow ${i + 1}" title="Remove workflow">${icon("trash")}</button></div><div class="workflow-body"><div class="form-grid"><div class="field"><label for="wf-${i}-name">Workflow name</label><input id="wf-${i}-name" data-field="${field("name")}" value="${esc(w.name)}" placeholder="e.g. Prepare the weekly sales report" maxlength="160" required></div>${frequencyControl(w, i)}<div class="field"><label for="wf-${i}-trigger">What starts this workflow?</label><input id="wf-${i}-trigger" data-field="${field("trigger")}" value="${esc(w.trigger)}" maxlength="2000" placeholder="e.g. Every Monday morning"></div><div class="field"><label for="wf-${i}-outcome">What is the end result?</label><input id="wf-${i}-outcome" data-field="${field("outcome")}" value="${esc(w.outcome)}" maxlength="2000" placeholder="e.g. Report shared with the team"></div></div><div id="workflow-steps-${i}">${workflowSteps(w, i)}</div><button class="button small" type="button" data-action="add-step" data-w="${i}">${icon("plus")}Add a step</button><div class="field"><label for="wf-${i}-pain">Where does this workflow get frustrating? <span class="muted">(optional)</span></label><textarea id="wf-${i}-pain" data-field="${field("pain_points")}" maxlength="2000" placeholder="e.g. Copying information between systems takes a lot of time.">${esc(w.pain_points)}</textarea></div><div class="button-row workflow-save-row"><button class="button small" type="button" data-action="save-workflow" data-w="${i}">${icon("check")}Save workflow ${i + 1}</button></div></div></section>`;
+  return `<section class="workflow-editor"><div class="workflow-title-row"><span class="workflow-number">${tr("WORKFLOW {0}", String(i + 1).padStart(2, "0"))}</span><strong data-workflow-title="${i}">${esc(w.name || tr("Your everyday process"))}</strong><span data-workflow-saved="${i}">${workflowSaveBadge(w)}</span><button class="icon-button" type="button" data-action="remove-workflow" data-w="${i}" aria-label="${tr("Remove workflow {0}", i + 1)}" title="${tr("Remove workflow")}">${icon("trash")}</button></div><div class="workflow-body"><div class="form-grid"><div class="field"><label for="wf-${i}-name">${tr("Workflow name")}</label><input id="wf-${i}-name" data-field="${field("name")}" value="${esc(w.name)}" placeholder="${tr("e.g. Prepare the weekly sales report")}" maxlength="160" required></div>${frequencyControl(w, i)}<div class="field"><label for="wf-${i}-trigger">${tr("What starts this workflow?")}</label><input id="wf-${i}-trigger" data-field="${field("trigger")}" value="${esc(w.trigger)}" maxlength="2000" placeholder="${tr("e.g. Every Monday morning")}"></div><div class="field"><label for="wf-${i}-outcome">${tr("What is the end result?")}</label><input id="wf-${i}-outcome" data-field="${field("outcome")}" value="${esc(w.outcome)}" maxlength="2000" placeholder="${tr("e.g. Report shared with the team")}"></div></div><div id="workflow-steps-${i}">${workflowSteps(w, i)}</div><button class="button small" type="button" data-action="add-step" data-w="${i}">${tr("{0}Add a step", icon("plus"))}</button><div class="field"><label for="wf-${i}-pain">${tr("Where does this workflow get frustrating?")} <span class="muted">${tr("(optional)")}</span></label><textarea id="wf-${i}-pain" data-field="${field("pain_points")}" maxlength="2000" placeholder="${tr("e.g. Copying information between systems takes a lot of time.")}">${esc(w.pain_points)}</textarea></div><div class="button-row workflow-save-row"><button class="button small" type="button" data-action="save-workflow" data-w="${i}">${tr("{0}Save workflow {1}", icon("check"), i + 1)}</button></div></div></section>`;
 }
 function stepEditor(s, i, j, count, connector = true) {
   const field = (k) => `workflows.${i}.steps.${j}.${k}`;
-  return `${connector && j ? `<div class="workflow-connector">${icon("down")}</div>` : ""}<div class="step-card"><div class="step-card-header"><span class="step-number">${j + 1}</span><strong>Step ${j + 1}</strong><button type="button" class="icon-button" data-action="move-up" data-w="${i}" data-s="${j}" ${j === 0 ? "disabled" : ""} aria-label="Move step ${j + 1} up">${icon("up")}</button><button type="button" class="icon-button" data-action="move-down" data-w="${i}" data-s="${j}" ${j === count - 1 ? "disabled" : ""} aria-label="Move step ${j + 1} down">${icon("down")}</button><button type="button" class="icon-button" data-action="remove-step" data-w="${i}" data-s="${j}" ${count === 1 ? "disabled" : ""} aria-label="Remove step ${j + 1}">${icon("trash")}</button></div><div class="field"><label for="s-${i}-${j}-action">What do you do?</label><input id="s-${i}-${j}-action" data-field="${field("action")}" value="${esc(s.action)}" placeholder="e.g. Export this week’s sales from the CRM" maxlength="160" required></div><div class="step-fields"><div class="field"><label for="s-${i}-${j}-tool">Tool used</label><select id="s-${i}-${j}-tool" data-field="${field("tool")}"><option value="">No digital tool</option>${state.intake.assessment.tools.map((t) => `<option ${t === s.tool ? "selected" : ""} value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div><div class="field"><label for="s-${i}-${j}-time">Minutes / run</label><input id="s-${i}-${j}-time" data-field="${field("minutes")}" type="number" min="0" max="10080" step="any" value="${s.minutes}" required></div><div class="field"><label for="s-${i}-${j}-support">How could an agent help?</label><select id="s-${i}-${j}-support" data-field="${field("support")}">${[
-    ["assist", "Help me do it"],
-    ["automate", "Do it for me"],
-    ["manual", "Human only"],
+  return `${connector && j ? `<div class="workflow-connector">${icon("down")}</div>` : ""}<div class="step-card"><div class="step-card-header"><span class="step-number">${j + 1}</span><strong>${tr("Step {0}", j + 1)}</strong><button type="button" class="icon-button" data-action="move-up" data-w="${i}" data-s="${j}" ${j === 0 ? "disabled" : ""} aria-label="${tr("Move step {0} up", j + 1)}">${icon("up")}</button><button type="button" class="icon-button" data-action="move-down" data-w="${i}" data-s="${j}" ${j === count - 1 ? "disabled" : ""} aria-label="${tr("Move step {0} down", j + 1)}">${icon("down")}</button><button type="button" class="icon-button" data-action="remove-step" data-w="${i}" data-s="${j}" ${count === 1 ? "disabled" : ""} aria-label="${tr("Remove step {0}", j + 1)}">${icon("trash")}</button></div><div class="field"><label for="s-${i}-${j}-action">${tr("What do you do?")}</label><input id="s-${i}-${j}-action" data-field="${field("action")}" value="${esc(s.action)}" placeholder="${tr("e.g. Export this week’s sales from the CRM")}" maxlength="160" required></div><div class="step-fields"><div class="field"><label for="s-${i}-${j}-tool">${tr("Tool used")}</label><select id="s-${i}-${j}-tool" data-field="${field("tool")}"><option value="">${tr("No digital tool")}</option>${state.intake.assessment.tools.map((t) => `<option ${t === s.tool ? "selected" : ""} value="${esc(t)}">${esc(t)}</option>`).join("")}</select></div><div class="field"><label for="s-${i}-${j}-time">${tr("Minutes / run")}</label><input id="s-${i}-${j}-time" data-field="${field("minutes")}" type="number" min="0" max="10080" step="any" value="${s.minutes}" required></div><div class="field"><label for="s-${i}-${j}-support">${tr("How could an agent help?")}</label><select id="s-${i}-${j}-support" data-field="${field("support")}">${[
+    ["assist", tr("Help me do it")],
+    ["automate", tr("Do it for me")],
+    ["manual", tr("Human only")],
   ]
     .map(
       ([v, l]) =>
@@ -644,24 +730,24 @@ function stepEditor(s, i, j, count, connector = true) {
     )
     .join(
       "",
-    )}</select></div></div><label class="checkbox-label"><input type="checkbox" data-field="${field("human_review")}" ${s.human_review ? "checked" : ""}>A person must review or approve this step</label></div>`;
+    )}</select></div></div><label class="checkbox-label"><input type="checkbox" data-field="${field("human_review")}" ${s.human_review ? "checked" : ""}>${tr("A person must review or approve this step")}</label></div>`;
 }
 function workflowSteps(w, i) {
   const view = workflowView(w);
   view.selected = Math.max(0, Math.min(view.selected, w.steps.length - 1));
-  return `<div class="workflow-steps-toolbar"><div class="step-label">THE STEPS, IN ORDER</div><div class="workflow-view-switch" role="group" aria-label="Workflow ${i + 1} view">${["text", "diagram"].map((mode) => `<button type="button" class="workflow-view-button" data-action="workflow-view" data-mode="${mode}" data-w="${i}" aria-pressed="${view.mode === mode}" aria-controls="workflow-step-content-${i}">${icon(mode)}${mode === "text" ? "Text" : "Diagram"}</button>`).join("")}</div></div><div id="workflow-step-content-${i}">${view.mode === "diagram" ? workflowDiagram(w, i, view.selected) : w.steps.map((step, j) => stepEditor(step, i, j, w.steps.length)).join("")}</div>`;
+  return `<div class="workflow-steps-toolbar"><div class="step-label">${tr("THE STEPS, IN ORDER")}</div><div class="workflow-view-switch" role="group" aria-label="${tr("Workflow {0} view", i + 1)}">${["text", "diagram"].map((mode) => `<button type="button" class="workflow-view-button" data-action="workflow-view" data-mode="${mode}" data-w="${i}" aria-pressed="${view.mode === mode}" aria-controls="workflow-step-content-${i}">${icon(mode)}${mode === "text" ? tr("Text") : tr("Diagram")}</button>`).join("")}</div></div><div id="workflow-step-content-${i}">${view.mode === "diagram" ? workflowDiagram(w, i, view.selected) : w.steps.map((step, j) => stepEditor(step, i, j, w.steps.length)).join("")}</div>`;
 }
 function stepSupportLabel(step) {
-  if (!step.action.trim()) return "Needs description";
+  if (!step.action.trim()) return tr("Needs description");
   return step.support === "manual"
-    ? "Human only"
+    ? tr("Human only")
     : step.support === "automate"
-      ? "Automated"
-      : "Assisted";
+      ? tr("Automated")
+      : tr("Assisted");
 }
 function workflowDiagram(w, i, selected) {
   const described = w.steps.filter((step) => step.action.trim()).length;
-  return `<div class="diagram-map-heading"><p class="diagram-hint">Select a step to edit its details.</p><span class="tag" data-workflow-completion>${described} of ${w.steps.length} described</span></div><div class="workflow-diagram-layout"><div class="workflow-diagram" role="group" aria-label="Workflow ${i + 1} diagram"><div class="diagram-terminal"><span class="diagram-terminal-dot"></span><div><strong>Start</strong><span data-diagram-trigger>${esc(w.trigger || "Workflow begins")}</span></div></div><ol class="diagram-sequence">${w.steps.map((step, j) => `<li><span class="diagram-arrow">${icon("down")}</span><button type="button" class="diagram-node ${step.action.trim() ? "" : "is-incomplete"}" data-action="select-step" data-w="${i}" data-s="${j}" data-step-node="${j}" data-support="${esc(step.support)}" aria-pressed="${j === selected}" aria-label="Edit step ${j + 1}: ${esc(step.action.trim() || "Needs description")}"><span class="diagram-node-header"><span class="step-number">${j + 1}</span><span data-node-support>${stepSupportLabel(step)}</span><span data-node-review ${step.human_review ? "" : "hidden"} title="Human review required">${icon("shield")}</span></span><strong data-node-action>${esc(step.action.trim() || "Describe this step")}</strong><span class="diagram-node-meta" ${step.action.trim() ? "" : "hidden"}><span data-node-tool>${esc(step.tool || "No digital tool")}</span><span data-node-minutes>${step.minutes ?? "—"} min</span></span></button></li>`).join("")}</ol><span class="diagram-arrow">${icon("down")}</span><button type="button" class="diagram-add" data-action="add-step" data-w="${i}" aria-label="Add a diagram step">${icon("plus")}Add step</button><span class="diagram-arrow">${icon("down")}</span><div class="diagram-terminal end"><span class="diagram-terminal-dot">${icon("check")}</span><div><strong>Done</strong><span data-diagram-outcome>${esc(w.outcome || "Workflow complete")}</span></div></div></div>${w.steps[selected] ? `<section class="diagram-inspector" aria-label="Selected step details"><div class="diagram-inspector-heading"><h3>Step details</h3><span>Step ${selected + 1} of ${w.steps.length}</span></div>${stepEditor(w.steps[selected], i, selected, w.steps.length, false)}</section>` : ""}</div>`;
+  return `<div class="diagram-map-heading"><p class="diagram-hint">${tr("Select a step to edit its details.")}</p><span class="tag" data-workflow-completion>${tr("{0} of {1} described", described, w.steps.length)}</span></div><div class="workflow-diagram-layout"><div class="workflow-diagram" role="group" aria-label="${tr("Workflow {0} diagram", i + 1)}"><div class="diagram-terminal"><span class="diagram-terminal-dot"></span><div><strong>${tr("Start")}</strong><span data-diagram-trigger>${esc(w.trigger || tr("Workflow begins"))}</span></div></div><ol class="diagram-sequence">${w.steps.map((step, j) => `<li><span class="diagram-arrow">${icon("down")}</span><button type="button" class="diagram-node ${step.action.trim() ? "" : "is-incomplete"}" data-action="select-step" data-w="${i}" data-s="${j}" data-step-node="${j}" data-support="${esc(step.support)}" aria-pressed="${j === selected}" aria-label="${tr("Edit step {0}: {1}", j + 1, esc(step.action.trim() || tr("Needs description")))}"><span class="diagram-node-header"><span class="step-number">${j + 1}</span><span data-node-support>${stepSupportLabel(step)}</span><span data-node-review ${step.human_review ? "" : "hidden"} title="${tr("Human review required")}">${icon("shield")}</span></span><strong data-node-action>${esc(step.action.trim() || tr("Describe this step"))}</strong><span class="diagram-node-meta" ${step.action.trim() ? "" : "hidden"}><span data-node-tool>${esc(step.tool || tr("No digital tool"))}</span><span data-node-minutes>${tr("{0} min", step.minutes == null ? "—" : formatNumber(step.minutes))}</span></span></button></li>`).join("")}</ol><span class="diagram-arrow">${icon("down")}</span><button type="button" class="diagram-add" data-action="add-step" data-w="${i}" aria-label="${tr("Add a diagram step")}">${tr("{0}Add step", icon("plus"))}</button><span class="diagram-arrow">${icon("down")}</span><div class="diagram-terminal end"><span class="diagram-terminal-dot">${icon("check")}</span><div><strong>${tr("Done")}</strong><span data-diagram-outcome>${esc(w.outcome || tr("Workflow complete"))}</span></div></div></div>${w.steps[selected] ? `<section class="diagram-inspector" aria-label="${tr("Selected step details")}"><div class="diagram-inspector-heading"><h3>${tr("Step details")}</h3><span>${tr("Step {0} of {1}", selected + 1, w.steps.length)}</span></div>${stepEditor(w.steps[selected], i, selected, w.steps.length, false)}</section>` : ""}</div>`;
 }
 function renderWorkflowSteps(i) {
   const region = $(`#workflow-steps-${i}`);
@@ -682,27 +768,27 @@ function updateDiagramPreview(i) {
   const diagram = $(".workflow-diagram", region);
   if (!diagram) return;
   $("[data-diagram-trigger]", diagram).textContent =
-    w.trigger || "Workflow begins";
+    w.trigger || tr("Workflow begins");
   $("[data-diagram-outcome]", diagram).textContent =
-    w.outcome || "Workflow complete";
+    w.outcome || tr("Workflow complete");
   $("[data-workflow-completion]", region).textContent =
-    `${w.steps.filter((step) => step.action.trim()).length} of ${w.steps.length} described`;
+    tr("{0} of {1} described", w.steps.filter((step) => step.action.trim()).length, w.steps.length);
   diagram.querySelectorAll("[data-step-node]").forEach((node) => {
     const j = +node.dataset.stepNode;
     const step = w.steps[j];
     const complete = !!step.action.trim();
     node.dataset.support = step.support;
     $("[data-node-action]", node).textContent =
-      step.action.trim() || "Describe this step";
-    $("[data-node-tool]", node).textContent = step.tool || "No digital tool";
-    $("[data-node-minutes]", node).textContent = `${step.minutes ?? "—"} min`;
+      step.action.trim() || tr("Describe this step");
+    $("[data-node-tool]", node).textContent = step.tool || tr("No digital tool");
+    $("[data-node-minutes]", node).textContent = tr("{0} min", step.minutes == null ? "—" : formatNumber(step.minutes));
     $("[data-node-support]", node).textContent = stepSupportLabel(step);
     $("[data-node-review]", node).hidden = !step.human_review;
     $(".diagram-node-meta", node).hidden = !complete;
     node.classList.toggle("is-incomplete", !complete);
     node.setAttribute(
       "aria-label",
-      `Edit step ${j + 1}: ${step.action.trim() || "Needs description"}`,
+      tr("Edit step {0}: {1}", j + 1, step.action.trim() || tr("Needs description")),
     );
   });
 }
@@ -714,7 +800,7 @@ function validateWorkflowSteps(
   for (const i of indexes) {
     const workflow = state.intake.assessment.workflows[i];
     if (!workflow.steps.length)
-      throw new Error(`Add at least one step to workflow ${i + 1}.`);
+      throw new Error(tr("Add at least one step to workflow {0}.", i + 1));
     if (!$(`#wf-${i}-frequency`).reportValidity()) return false;
     for (const [j, step] of workflow.steps.entries()) {
       const field = !draft && !step.action.trim()
@@ -731,8 +817,8 @@ function validateWorkflowSteps(
       const input = $(`#s-${i}-${j}-${field}`);
       input.setCustomValidity(
         field === "action"
-          ? "Describe what you do in this step."
-          : "Enter minutes between 0 and 10080.",
+          ? tr("Describe what you do in this step.")
+          : tr("Enter minutes between 0 and 10080."),
       );
       input.scrollIntoView({ block: "center" });
       input.focus({ preventScroll: true });
@@ -743,7 +829,7 @@ function validateWorkflowSteps(
   return true;
 }
 function wizardFooter() {
-  return `<div class="wizard-footer"><button type="button" class="button" data-action="${state.stage ? "back-stage" : "save-draft"}">${state.stage ? "Back" : "Save draft"}</button><span class="save-note" id="save-status">${esc(saveNote())}</span><div class="button-row">${state.stage ? '<button type="button" class="button" data-action="save-draft">Save draft</button>' : ""}<button type="submit" class="button primary">${state.stage === 2 ? "Share my assessment" : "Save & continue"}${icon("arrow")}</button></div></div>`;
+  return `<div class="wizard-footer"><button type="button" class="button" data-action="${state.stage ? "back-stage" : "save-draft"}">${state.stage ? tr("Back") : tr("Save draft")}</button><span class="save-note" id="save-status">${esc(saveNote())}</span><div class="button-row">${state.stage ? `<button type="button" class="button" data-action="save-draft">${tr("Save draft")}</button>` : ""}<button type="submit" class="button primary">${state.stage === 2 ? tr("Share my assessment") : tr("Save & continue")}${icon("arrow")}</button></div></div>`;
 }
 function newStep() {
   return {
@@ -758,7 +844,7 @@ function newStep() {
 // With a target workflow, everything else is sent as last saved, so other unsaved edits stay unsaved.
 async function saveIntake(status = "draft", target = null, remove = false) {
   if (state.saving)
-    throw new Error("Your assessment is still saving. Please wait a moment.");
+    throw new Error(tr("Your assessment is still saving. Please wait a moment."));
   const a = state.intake.assessment;
   const body = target
     ? {
@@ -777,7 +863,7 @@ async function saveIntake(status = "draft", target = null, remove = false) {
     form.setAttribute("aria-busy", "true");
   }
   const note = $("#save-status");
-  if (note) note.textContent = "Saving your progress…";
+  if (note) note.textContent = tr("Saving your progress…");
   try {
     const result = await api("/api/intake", {
       method: "PUT",
@@ -800,8 +886,9 @@ async function saveIntake(status = "draft", target = null, remove = false) {
   }
 }
 function renderSuccess() {
+  state.screen = "success";
   const p = state.intake.employee;
-  app.innerHTML = `${intakeHeader()}<main class="intake-container"><section class="success-panel"><span class="success-icon">${icon("check")}</span><div class="eyebrow">Your perspective makes a difference</div><h1>Thanks for sharing your work, ${esc(p.name.split(" ")[0])}.</h1><p>Your assessment is ready for your team. Your workflows will help identify practical agent opportunities for ${esc(p.entity_name)} and ${esc(p.team_name)}.</p><div class="button-row"><button class="button primary" data-action="edit-assessment">Review or update my answers ${icon("arrow")}</button></div><p class="small muted">You can return using your private link while it remains valid.</p></section></main>`;
+  app.innerHTML = `${intakeHeader()}<main class="intake-container"><section class="success-panel"><span class="success-icon">${icon("check")}</span><div class="eyebrow">${tr("Your perspective makes a difference")}</div><h1>${tr("Thanks for sharing your work, {0}.", esc(p.name.split(" ")[0]))}</h1><p>${tr("Your assessment is ready for your team. Your workflows will help identify practical agent opportunities for {0} and {1}.", esc(p.entity_name), esc(p.team_name))}</p><div class="button-row"><button class="button primary" data-action="edit-assessment">${tr("Review or update my answers {0}", icon("arrow"))}</button></div><p class="small muted">${tr("You can return using your private link while it remains valid.")}</p></section></main>`;
 }
 function intakeError(error) {
   const node = $("#intake-errors");
@@ -841,7 +928,7 @@ document.addEventListener("click", async (event) => {
     if (action === "refresh") {
       button.disabled = true;
       await refresh();
-      toast("Workspace updated.");
+      toast(tr("Workspace updated."));
       return;
     }
     if (action === "menu") {
@@ -875,6 +962,17 @@ document.addEventListener("click", async (event) => {
       teamModal("", id);
       return;
     }
+    if (action === "collaborator") {
+      collaboratorModal(id);
+      return;
+    }
+    if (action === "collaborator-link") {
+      const collaborator = state.data.collaborators.find((c) => c.id === +id);
+      if (!confirm(tr("Create a new sign-in link for {0}? The previous link stops working.", collaborator.name))) return;
+      button.disabled = true;
+      collaboratorLinkModal(collaborator.name, await post(`/api/admin/collaborators/${id}/invite`));
+      return;
+    }
     if (action === "delete") {
       if (!confirm(button.dataset.confirm)) return;
       button.disabled = true;
@@ -883,7 +981,7 @@ document.addEventListener("click", async (event) => {
       // A deleted entity or team must not stay selected as a filter.
       state.entity = state.team = "";
       await refresh();
-      toast("Deleted from your workspace.");
+      toast(tr("Deleted from your workspace."));
       return;
     }
     if (action === "add-person") {
@@ -910,7 +1008,7 @@ document.addEventListener("click", async (event) => {
       await api(`/api/admin/employees/${id}/invite`, { method: "DELETE" });
       modal.close();
       await refresh();
-      toast("Invitation revoked. Saved answers preserved.");
+      toast(tr("Invitation revoked. Saved answers preserved."));
       return;
     }
     if (action === "copy-invite") {
@@ -919,9 +1017,9 @@ document.addEventListener("click", async (event) => {
       try {
         if (!navigator.clipboard) throw new Error();
         await navigator.clipboard.writeText(input.value);
-        toast("Private invitation link copied.");
+        toast(tr("Private invitation link copied."));
       } catch {
-        toast("Link selected. Use your device’s Copy command.");
+        toast(tr("Link selected. Use your device’s Copy command."));
       }
       return;
     }
@@ -957,7 +1055,7 @@ document.addEventListener("click", async (event) => {
     if (action === "save-draft") {
       button.disabled = true;
       await saveIntake("draft");
-      toast("Your draft is saved. You can return using this private link.");
+      toast(tr("Your draft is saved. You can return using this private link."));
       return;
     }
     if (action === "edit-assessment") {
@@ -982,7 +1080,7 @@ document.addEventListener("click", async (event) => {
       if (!validateWorkflowSteps([i], true)) return;
       button.disabled = true;
       await saveIntake("draft", workflows[i]);
-      toast(`${workflows[i].name.trim() || `Workflow ${i + 1}`} is saved.`);
+      toast(tr("{0} is saved.", workflows[i].name.trim() || tr("Workflow {0}", i + 1)));
       return;
     }
     if (action === "workflow-view" || action === "select-step") {
@@ -1002,7 +1100,7 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "add-workflow") {
       if (workflows.length >= 30) {
-        toast("You can share up to 30 workflows.", true);
+        toast(tr("You can share up to 30 workflows."), true);
         return;
       }
       workflows.push({
@@ -1016,14 +1114,14 @@ document.addEventListener("click", async (event) => {
         steps: [newStep()],
       });
     } else if (action === "remove-workflow") {
-      if (!confirm("Remove this workflow from your assessment?")) return;
+      if (!confirm(tr("Remove this workflow from your assessment?"))) return;
       // A saved workflow is deleted right away so it cannot reappear on the next visit.
       if (savedWorkflows.has(workflows[i]))
         await saveIntake("draft", workflows[i], true);
       workflows.splice(i, 1);
     } else if (action === "add-step") {
       if (workflows[i].steps.length >= 50) {
-        toast("You can add up to 50 steps per workflow.", true);
+        toast(tr("You can add up to 50 steps per workflow."), true);
         return;
       }
       workflows[i].steps.push(newStep());
@@ -1154,13 +1252,17 @@ document.addEventListener("input", (event) => {
   if (keys[0] === "workflows") {
     if (keys[2] === "name")
       $(`[data-workflow-title="${keys[1]}"]`).textContent =
-        input.value.trim() || "Your everyday process";
+        input.value.trim() || tr("Your everyday process");
     updateDiagramPreview(+keys[1]);
   }
   showSaveStatus();
 });
 document.addEventListener("change", (event) => {
   const input = event.target;
+  if (input.id === "language-select") {
+    changeLanguage(input.value);
+    return;
+  }
   if (input.id === "entity-filter") {
     state.entity = input.value;
     state.team = "";
@@ -1187,7 +1289,7 @@ document.addEventListener("change", (event) => {
       if (used) {
         input.checked = true;
         toast(
-          "This tool is used in a workflow. Change those steps before removing it.",
+          tr("This tool is used in a workflow. Change those steps before removing it."),
           true,
         );
         return;
@@ -1216,15 +1318,22 @@ document.addEventListener("submit", async (event) => {
     if (adminForms[form.id]) {
       const [path, noun, created] = adminForms[form.id];
       const id = form.dataset.id;
-      const body = Object.fromEntries(new FormData(form));
+      const data = new FormData(form);
+      const body = Object.fromEntries(data);
       if (body.entity_id) body.entity_id = +body.entity_id;
-      await api(`/api/admin/${path}${id ? `/${id}` : ""}`, {
+      if (form.id === "collaborator-form") {
+        body.entity_ids = data.getAll("entity_ids").map(Number);
+        if (!body.entity_ids.length) throw new Error(tr("Choose at least one entity."));
+      }
+      const result = await api(`/api/admin/${path}${id ? `/${id}` : ""}`, {
         method: id ? "PUT" : "POST",
         body: JSON.stringify(body),
       });
-      modal.close();
       await refresh();
-      toast(id ? `${noun} updated.` : created);
+      // A new collaborator's response carries their private sign-in link.
+      if (result.token) return collaboratorLinkModal(body.name, result);
+      modal.close();
+      toast(id ? tr("{0} updated.", tr(noun)) : tr(created));
       return;
     }
     if (form.id === "person-form") {
@@ -1237,7 +1346,7 @@ document.addEventListener("submit", async (event) => {
         });
         modal.close();
         await refresh();
-        toast("Employee details updated.");
+        toast(tr("Employee details updated."));
       } else {
         const result = await post("/api/admin/employees", body);
         await refresh();
@@ -1247,9 +1356,9 @@ document.addEventListener("submit", async (event) => {
     }
     if (form.id === "intake-form") {
       if (state.stage === 0 && !state.intake.assessment.tools.length)
-        throw new Error("Choose at least one digital tool to continue.");
+        throw new Error(tr("Choose at least one digital tool to continue."));
       if (state.stage === 1 && !state.intake.assessment.workflows.length)
-        throw new Error("Describe at least one workflow to continue.");
+        throw new Error(tr("Describe at least one workflow to continue."));
       if (state.stage === 1 && !validateWorkflowSteps()) return;
       // A submitted record must remain a draft while the employee edits earlier steps.
       await saveIntake(state.stage === 2 ? "submitted" : "draft");
@@ -1322,7 +1431,19 @@ async function start() {
       if (state.intake.assessment.status === "submitted") renderSuccess();
       else renderIntake();
     } catch (error) {
-      app.innerHTML = `${intakeHeader()}<main class="intake-error"><span class="empty-icon">${icon("shield")}</span><h1>Let’s get you the right link.</h1><p>${esc(error.message)}</p></main>`;
+      renderStartError(error, true);
+    }
+  } else if (location.pathname === "/join") {
+    // A collaborator's private link: exchange it for a session, then hide it from the address bar.
+    const token = location.hash.slice(1);
+    history.replaceState(null, "", "/");
+    try {
+      await post("/api/join", { token });
+      await loadWorkspace();
+      state.page = "overview";
+      renderShell();
+    } catch (error) {
+      renderStartError(error, true);
     }
   } else {
     try {
@@ -1331,8 +1452,7 @@ async function start() {
       renderShell();
     } catch (error) {
       if (error.status === 401) renderLogin();
-      else
-        app.innerHTML = `<main class="intake-error"><h1>We couldn’t open the workspace.</h1><p>${esc(error.message)}</p><button class="button" data-action="reload">Try reloading the page</button></main>`;
+      else renderStartError(error);
     }
   }
 }
